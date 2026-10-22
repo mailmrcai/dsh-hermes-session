@@ -1,0 +1,6 @@
+url: https://github.com/mailmrcai/dsh-hermes-session
+name: mailmrcai/dsh-hermes-session
+category: session
+description:
+  en: "Import sessions from a local Hermes Agent into the current conversation as bounded, untrusted background context: a /hermes picker over every profile's session store, plus list and import tools."
+  zh: "把本机 Hermes Agent 的会话导入当前会话，作为有界、不可信的背景上下文：/hermes 选择器覆盖所有 profile 的会话库，另有列会话与导入两个工具。"
