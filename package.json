@@ -1,0 +1,64 @@
+{
+  "name": "dsh-hermes-session",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Import sessions from a local Hermes Agent into the current DeepSeek Harness conversation as bounded, untrusted background context.",
+  "license": "MIT",
+  "author": "caizeqi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caizeqi/dsh-hermes-session.git"
+  },
+  "homepage": "https://github.com/caizeqi/dsh-hermes-session#readme",
+  "bugs": {
+    "url": "https://github.com/caizeqi/dsh-hermes-session/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-bundle",
+    "dsh-plugin",
+    "hermes",
+    "session",
+    "context",
+    "import"
+  ],
+  "meta": {
+    "title": "Hermes Session Import",
+    "description": "Read-only access to Hermes Agent sessions, imported into the current DSH conversation as bounded, untrusted background context."
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "check": "node --check src/index.js && for f in src/*.js; do node --check \"$f\" || exit 1; done",
+    "selftest": "node selftest/run.mjs && node selftest/clientid.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-commands"
+      ]
+    }
+  }
+}

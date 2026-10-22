@@ -1,0 +1,11 @@
+# 开发时的软链（本地测试用，不进包也不进仓库）
+node_modules/
+
+# 打包产物
+*.tgz
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,22 @@
+# dsh-hermes-session 的 bundle patch：声明插件行与默认配置。
+#
+# 这是一个 HOST 平面插件：它注册工具、只读访问本机 Hermes Agent 的会话库，
+# 必须落在 host 组合里（这个 insert），不能放进 agent preset。
+#
+# 用户自己的可写层（$DSH_HOME/dsh/cordis.patch.yml）可以用同一 id 覆盖 config。
+# config 是整体替换而不是深合并，覆盖时要把字段写全。
+- insert:
+    - id: dsh-hermes-session
+      name: 'dsh-hermes-session'
+      config:
+        # Hermes Agent 的会话库。留空则取 $HERMES_DB，再退回 ~/.hermes/state.db。
+        dbPath: ''
+        # 调用 hermes_read.py 的解释器。留空则用 $HERMES_PYTHON，再退回 python3。
+        # 仅使用标准库（sqlite3），Python 3.8+ 即可。
+        pythonPath: ''
+        # 单次导入默认注入的字符上限（约等于 token 预算的粗估，1 token ≈ 3~4 字符）。
+        # 这只是默认值，工具调用时可用 maxChars 覆盖；硬上限由 maxCharsHard 兜底。
+        maxChars: 60000
+        maxCharsHard: 160000
+        # 调用时最多带上多少条消息；超出时保留"首条 user 消息 + 最近 N 条"。
+        maxMessages: 300

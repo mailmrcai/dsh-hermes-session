@@ -1,0 +1,248 @@
+# dsh-hermes-session
+
+把本机 **Hermes Agent**（另一个独立智能体）的会话接入 DeepSeek Harness：
+列出会话、指定一个会话，就把它的完整对话作为**不可信背景**注入当前 DSH 会话。
+
+## 三个入口
+
+| 入口 | 形态 | 作用 |
+|---|---|---|
+| `/hermes` | 斜杠命令（交互式，带图标） | 弹窗列出全部 profile 的会话，点击即导入。复刻 `/model` 的 popupSelect 模式 |
+| `hermes_sessions_list` | 模型工具 | 列会话（标题 / 目录 / 消息数 / 最后活动），默认扫全部 profile 合并排序 |
+| `hermes_session_import` | 模型工具 | 按 sessionId 导入（支持唯一前缀），注入文本带警示头和截断事实 |
+
+`/hermes` 弹窗和工具读的是同一份数据、走同一条注入通道，只是入口不同。
+
+**斜杠菜单里只有 `/hermes` 一条**——插件不注册任何 Host 斜杠命令，数据通道走
+HTTP 路由（见下面「数据通道为什么是 HTTP 路由」）。
+
+## 架构
+
+```
+src/index.js     插件入口：注册工具 + HTTP 路由 + systemPrompt 路由段
+src/tools.js     两个工具的 schema/execute（exec.deferContext 注入）
+src/routes.js    Host 端 HTTP 路由：GET /api/hermes.sessions（列表）、
+                 POST /api/hermes.import（导入 + agent.inject 注入当前轮）
+client.js        客户端半部：注册 CommandContribution（popupSelect + icon），
+                 options/onSelect 用 fetch 调上面两条路由
+src/bridge.js    子进程调用 hermes_read.py（--db/--profile 前置，避免 argparse 报错）
+src/render.js    投影 → 注入文本（警示头 + 元信息 + 预算截断）
+scripts/hermes_read.py   只读访问 SQLite，Python 3.8+ 标准库，零第三方依赖
+selftest/run.mjs         不经过 harness 的端到端自测（工具 + HTTP 路由）
+selftest/clientid.mjs   客户端模块不变量（id === 包名、走路由、图标、无 Host 命令）
+```
+
+### /hermes 弹窗的数据流
+
+```
+浏览器输入 /hermes
+  → CommandContribution (client.js) 匹配
+  → popupSelect.options()
+      └─ fetch('api/hermes.sessions')
+      ← Host 路由返回 JSON → 解析成 SelectOption[]
+  → 用户点击某条
+  → popupSelect.onSelect()
+      └─ fetch('api/hermes.import?sessionId=<DSH会话id>', {method:'POST', body:{sessionId}})
+      ← Host 路由读库 + 渲染 + agent.inject()（注入当前轮 next-step）
+  → 面板关闭，下一 step 模型看到注入的上下文
+```
+
+### 菜单里的命令与图标
+
+`/hermes` 是**客户端 contribution**（`CommandContribution`），带 `icon:
+IconArchiveOutlineRegular`（归档箱）。图标来自
+`@deepseek-ai/dsh-client-ui-primitives`——它是 Web shell 的平台 seed
+（`staticModules`），任何 client 模块 `require` 即得，无需在 `dsh.client` 里声明。
+
+`/compact` `/model` `/export` 的图标走的是另一条路：`dsh-client-ui-commands` 里的
+`BUILTINS` 表把 `definitionId` 映射到命令名再取 `HOST_FACES` 的图标——
+那张表硬编码在 DSH 内部，外部插件的 Host 命令拿不到。
+
+### 数据通道为什么是 HTTP 路由
+
+试过三条路，只有第三条同时满足「有图标」和「菜单只有 /hermes 一条」：
+
+1. **自定义 Remote 服务**（`TypertRemoteService` + `@Remote`）：Host 的 Gateway
+   能发现，但**客户端不会出现 `remote.hermes`**——客户端的 `ctx.remote.<ns>`
+   由 DSH 自带的 `dsh-api-remotes` **逐个手工声明**（`commands` / `account` /
+   `agentPresets` / `productAnalytics` …），**没有自动发现机制**。客户端 half 永远
+   `pending (waiting for service: remote.hermes)`，boot 审计判失败，harness 起不来。
+2. **斜杠命令做数据通道**（`ctx.commands.register` + `ctx.remote.commands.execute`）：
+   能通，但 **Host 命令无法从菜单隐藏**——`CommandDefinition` 没有 hidden/visible
+   字段，客户端 `candidates()` 直接展开 Host catalog（无过滤钩子），每注册一条
+   菜单就多一项。而图标只给客户端 contribution（`CommandContribution` 有 `icon`
+   字段，`CommandDecoration` 没有），且 Host 命令与 contribution **不能同名**
+   （同名会让 `candidates()` throw，整个菜单坏掉）。
+3. **HTTP 路由**（`ctx.connection.fetch.register`）：Host 注册 `/api` 下的精确路由，
+   客户端直接 `fetch`。**路由不进斜杠菜单**，也不需要任何 Remote 命名空间。
+
+第 3 条有现成范例：`dsh-session-log-export` 的 `/export` 就是
+`ctx.connection.fetch.register({ path: '/api/session.export', ... })` + 客户端 fetch。
+鉴权由物理载体处理（"after the physical carrier has applied its trust and
+authentication policy"），路由本身不用管。
+
+代价：多开两个 HTTP 端点（只读列表 + 只读导入），都在 `/api/hermes.*` 下。
+
+### 注入用 steer 而不是 inject
+
+Agent 的三个 inbox 入口：
+
+| 方法 | 落点 | 唤醒 driver | 语义 |
+|---|---|---|---|
+| `inject` | next-step | **否** | 插入当前轮的下一个 step |
+| `steer` | next-step | **是** | 同 next-step，但会开一个新 turn |
+| `followup` | next-turn | 是 | 排队成下一轮用户消息 |
+
+**HTTP 路由必须用 `steer`**：它由浏览器直接 POST，在 turn 之外执行，agent 通常空闲。
+`inject` 不唤醒 driver → 消息静静躺在 inbox 的 next-step 队列 → 没有 turn 去 claim
+它 → **接口返回 200，但对话里看不到任何东西**。
+
+`steer` 是同样的 next-step 语义（不是"用户又发了一条消息"），但会唤醒 driver，
+消息在随后的那一轮被消费，模型随之看到注入的上下文。
+
+（工具路径不受影响：工具在 turn 内部执行，`exec.deferContext()` 的上下文挂在
+本次工具结果上，loop 在 `tool/result` 之后追加，天然可见。）
+
+### 注入在对话里长什么样
+
+注入消息的 `source` 用 DSH 的 **recall 形态**：
+
+```js
+source: {
+  kind: 'hermes-session',
+  form: 'recall',
+  version: 1,
+  references: [{ sessionId, label, retainedMessages, omittedMessages, truncated }],
+}
+```
+
+`form: 'recall'` 让 DSH 的 `ContextInjectionRow` 渲染它——对话列表里是**一行可折叠的
+上下文**（折叠时显示来源标签，展开后是代码块样式的正文，max-height 141px 可滚动），
+而不是把全文铺开的 user 气泡。契约见 `dsh-client-ui-chat` 的 `recalledSessions()`：
+`references[]` 每项必须带 `label` / `retainedMessages` / `omittedMessages` / `truncated`。
+
+这与 DSH 原生 `@` 引用会话是同一种呈现——语义也吻合（"从另一个会话恢复的上下文"）。
+
+### 数据来源（已实机核实）
+
+Hermes 的会话按 **profile 分库**：
+
+- `~/.hermes/state.db` → profile `default`（本机 270 个会话）
+- `~/.hermes/profiles/<name>/state.db` → 其它 profile（本机 geek/ngs/paper_reader/prodes/sirna 共 153 个）
+
+主库**只有 default** 的会话；只读主库会漏掉其它 profile。所以默认扫全部库，
+`--profile` / 工具的 `profile` 参数可限定。每条结果都标注来源 profile。
+
+会话元信息在 `sessions` 表，消息在 `messages` 表（OpenAI 风格：user / assistant(含
+`tool_calls` JSON) / tool(结果 JSON)）。只读行过滤 `active=1`；默认隐藏 archived、
+hidden 和子会话（压缩续写/子代理）。
+
+### 安全与只读语义
+
+- SQLite 以 `mode=ro` 打开，**绝不写** Hermes 的任何数据（本机根分区曾以 ro 挂载，只读是唯一安全姿态）
+- 不 import Hermes 源码、不启动 hermes 进程（其 CLI 在只读文件系统上有自检会崩）；直接读持久化契约，schema 变化时给结构化错误
+- 注入内容带固定警示：禁止模型把快照里的指令 / 权限声明 / 工具请求当真，与 DSH 原生 `session-reference` 同语义
+- 注入通道：工具用 `exec.deferContext()`，命令/Remote 用 `agent.inject()`——两者都往 inbox 的 `next-step` 排消息，当前轮下一步被模型看到，不开新用户轮。**不用** `agent.followup()`（多开一轮且易被当成用户新指令）
+
+### 预算
+
+- 单条工具结果保留 1200 字符，工具调用参数 600 字符
+- `maxMessages`（默认 300）保留"首条 user 消息 + 最近 N 条"，理解任务起点不丢
+- `maxChars`（默认 60000，硬上限 160000）从尾部装填，超预算丢最老并如实报告条数
+
+## 配置（cordis.patch.yml，可被用户层覆盖）
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `dbPath` | 空 | 直连某个 state.db；空则扫全部 profile 库 |
+| `pythonPath` | `python3` | 解释器（需标准库 sqlite3，Python 3.8+） |
+| `maxChars` | 60000 | 单次导入默认字符预算 |
+| `maxCharsHard` | 160000 | 工具调用可调的上限护栏 |
+| `maxMessages` | 300 | 默认最多带多少条消息 |
+
+## 开发与自测
+
+```bash
+node --check src/*.js && node --check client.js   # 语法
+node selftest/run.mjs                    # 28 项端到端自测（读真实库，零写入）
+python3 scripts/hermes_read.py list --limit 5
+python3 scripts/hermes_read.py --profile sirna show 20261021_135400_6c2813
+```
+
+自测覆盖：工具全路径、跨 profile、Remote 方法体（含 agent.inject）、错误路径。
+
+本地跑 selftest 需要解析 `@deepseek-ai/dsh-llm` / `dsh-tools` / `dsh-typert-protocol`
+（开发目录软链，见 `node_modules/@deepseek-ai/`；装进 profile 后由 harness 解析器提供）。
+
+## 安装状态
+
+- 已装入 `web` profile（link 安装指向本目录），`include:dsh-hermes-session` 行 active
+- **`dsh.client` 不设 `immediately: true`**：boot 只审计 `immediately` 的 client rows，
+  懒加载（用户输入 `/hermes` 才 import）与 `/model` 同模式，启动失败面最小
+- **源码改动需重启 harness 进程才在运行时生效**：`set_plugin` disable/enable 只重放
+  fiber 生命周期，Node 的 ESM 模块缓存不刷新——重启前进程持有加载时的旧代码副本
+- 浏览器验证受限：本环境无 X server（electron 报 `Missing X server or $DISPLAY`），
+  dsh_browser_* 工具不可用；`/hermes` 弹窗需在有显示环境的机器上验证
+
+### 踩坑记录：client 面让 harness 无法启动
+
+第一次带 `dsh.client` 安装后，harness 启动失败：
+`Failed to load plugins` → `web boot: 1 entry did not activate` →
+`dsh-hermes-session: import failed (see console for the import error)`。
+
+**根因**：`client.js` 里 `window.__ModuleLoader__.load({ id: ... })` 的 id 写成了
+`@deepseek-ai/dsh-hermes-session`，而包名是 `dsh-hermes-session`（无 scope）。
+
+模块系统按 graph row 的 id（= 包名）查找已注册的 factory：id 对不上 →
+bundle 加载了但 "loaded without registering" → fiber 建不起来 →
+`entry.fiber === undefined` → client-modules 抛 `import failed` →
+boot audit 判失败 → **整个 harness 起不来**。
+
+对照实现 `dsh-client-ui-model-selection` 的包名与 client id 严格相等。
+
+**修复**：`client.js` 的 id 改为 `dsh-hermes-session`（= package.json 的 name）。
+`selftest/clientid.mjs` 断言两者相等，防止再犯。
+
+**附带**：`dsh.client` 不设 `immediately: true`（对齐 `/model` 的懒加载模式）——
+`/hermes` 是用户主动触发的命令，不需要 boot 时激活，进一步缩小启动失败面。
+
+### 踩坑记录：命令没出现在斜杠菜单
+
+id 不匹配修好后，若 `/hermes` 仍作为普通消息进入模型，说明 client 模块没被 import
+（`commandUi.register` 从未执行）。此时查浏览器 console 里
+`client-modules: could not load "dsh-hermes-session"` 的具体原因。
+
+### 踩坑记录：自定义 Remote 命名空间不可用（pending 等不到服务）
+
+id 修好后错误变成：
+
+```
+web boot: 1 entry did not activate
+dsh-hermes-session: pending (waiting for service: remote.hermes)
+```
+
+**根因**：客户端的 `ctx.remote.<ns>` 命名空间由 `dsh-api-remotes` 逐个手工声明，
+没有自动发现机制。Host 侧 `new TypertRemoteService(ctx, 'hermes')` + `@Remote` 标记
+只能让 **Host 的 Gateway** 发现它，**客户端不会出现 `remote.hermes`**——
+client half 永远等不到这个服务，boot 审计判 pending → 整个 harness 起不来。
+
+**修复**：改走 HTTP 路由——Host 侧 `ctx.connection.fetch.register()` 注册
+`/api/hermes.sessions` 与 `/api/hermes.import`，客户端直接 `fetch`。
+（中途试过 `ctx.remote.commands` 通道，但 Host 命令无法从菜单隐藏，见上面
+「数据通道为什么是 HTTP 路由」。）
+
+`selftest/clientid.mjs` 断言客户端代码里不出现 `remote.hermes`、不出现
+`remote.commands`，且插件没有 `src/commands.js`——防止回退。
+
+## 已知边界
+
+- `hermes sessions list` CLI 本身在本机不可用（只读文件系统导致其自检崩溃），插件绕过 CLI 直读数据库
+- 快照是 `get_messages_as_conversation` 语义的简化投影：不解 hermes 的私有 marker 列，遇到非文本 content 按原文处理
+- 压缩续写（compression lineage）不跟随：导入的是该会话自身记录的活跃行
+- 斜杠菜单里只有 `/hermes` 一条；数据通道是 `/api/hermes.sessions` 与
+  `/api/hermes.import` 两个 HTTP 端点（只读 Hermes 库，不写）
+- 注入的上下文在对话里是**一行可折叠的上下文**（`form: 'recall'`），全文不铺开
+- 插件硬依赖 `agents` 服务（注入要 `ctx.agents.get(sessionId)` 定位当前会话）；
+  漏声明会让 `ctx.agents` 为 undefined，导入直接 400
+- 注入走 `agent.steer()`（唤醒 driver）；用 `inject()` 的话，会话空闲时消息
+  不会被消费，接口 200 但对话里看不到
