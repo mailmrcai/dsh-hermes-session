@@ -4,14 +4,14 @@
   "type": "module",
   "description": "Import sessions from a local Hermes Agent into the current DeepSeek Harness conversation as bounded, untrusted background context.",
   "license": "MIT",
-  "author": "caizeqi",
+  "author": "Inston Cai (mailmrcai)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/caizeqi/dsh-hermes-session.git"
+    "url": "git+https://github.com/mailmrcai/dsh-hermes-session.git"
   },
-  "homepage": "https://github.com/caizeqi/dsh-hermes-session#readme",
+  "homepage": "https://github.com/mailmrcai/dsh-hermes-session#readme",
   "bugs": {
-    "url": "https://github.com/caizeqi/dsh-hermes-session/issues"
+    "url": "https://github.com/mailmrcai/dsh-hermes-session/issues"
   },
   "keywords": [
     "dsh",
