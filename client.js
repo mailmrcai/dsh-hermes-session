@@ -27,7 +27,7 @@ window.__ModuleLoader__.load({
 
     /** Host 路由（document-relative，与 dsh-session-log-export 的做法一致）。 */
     const LIST_ROUTE = 'api/hermes.sessions'
-    const IMPORT_ROUTE = 'api/hermes.import'
+    const SELECT_ROUTE = 'api/hermes.select'
 
     /** 会话一条 → 弹窗一行。badge 显示 profile，detail 显示消息数和时间。 */
     function toOption(session) {
@@ -95,10 +95,16 @@ window.__ModuleLoader__.load({
               return sessions.map(toOption)
             },
             onSelect: async (option, session) => {
-              await callHost(`${IMPORT_ROUTE}?sessionId=${encodeURIComponent(session.sessionId)}`, {
+              // 只暂存，不注入。Host 侧在用户下一次发消息时（agent/pre-step）
+              // 才把选中的 Hermes 会话作为上下文挂到那一轮——这样用户可以先
+              // 选会话、再写描述，一次发送里两者一起处理。
+              await callHost(SELECT_ROUTE, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ sessionId: option.id }),
+                body: JSON.stringify({
+                  sessionId: option.id,
+                  dshSessionId: session.sessionId,
+                }),
               })
             },
           },

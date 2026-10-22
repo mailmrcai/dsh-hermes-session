@@ -10,7 +10,7 @@ offers three ways in:
 
 | Entry point | Shape | What it does |
 |---|---|---|
-| `/hermes` | Slash command (interactive) | Opens a searchable list of sessions across every profile; pick one and it is imported into the current conversation |
+| `/hermes` | Slash command (interactive) | Opens a searchable list of sessions across every profile; pick one and it is **staged** for the current conversation |
 | `hermes_sessions_list` | Model tool | Lists sessions (title / working directory / message count / last activity) across all profiles, sorted by recency |
 | `hermes_session_import` | Model tool | Imports one session by id (a unique prefix is enough) |
 
@@ -62,7 +62,7 @@ Hermes Agent                     this plugin                     DSH
                                                              │
 src/routes.js  ◀──HTTP── client.js ─────┘                    ▼
   GET  /api/hermes.sessions                            current conversation
-  POST /api/hermes.import                                   (one collapsed row)
+  POST /api/hermes.select                                   (one collapsed row)
 ```
 
 - **Read-only by construction.** The helper opens SQLite with `mode=ro`; it never writes to Hermes's
@@ -74,9 +74,29 @@ src/routes.js  ◀──HTTP── client.js ─────┘                 
 - **Bounded.** Message bodies are clipped, older messages are dropped first, and the truncation is
   reported in the injected header rather than hidden.
 
+## When the context is attached
+
+Picking a session does **not** inject anything. The pick is only staged; the snapshot is attached when
+you next send a message, so you can choose the session first and describe what you want afterwards.
+
+This mirrors how the harness's own `@`-mentioned session references work: the mention is resolved in the
+`agent/pre-step` hook, and the prepared snapshot is appended **after** the user's message, so the model
+sees your request and the referenced material in the same turn.
+
+```
+/hermes  → pick a session
+          → POST /api/hermes.select       ← stages it only (agentId → sessionId)
+          → you type your request and send
+          → agent/pre-step takes the staged pick
+          → reads the Hermes session, renders it as a form:'recall' context message
+          → appended after your message → the model sees both in one turn
+```
+
+Staging is consumed on read: one pick serves exactly the next message you send.
+
 ## The injected context
 
-The imported snapshot is injected as a **collapsed context row**, not as an expanded message bubble:
+The snapshot is attached as a **collapsed context row**, not as an expanded message bubble:
 the conversation shows the source session's title, and expanding it reveals the transcript in a bounded,
 scrollable code-style body. This mirrors how the harness renders its own session references.
 
@@ -89,8 +109,8 @@ node selftest/run.mjs && node selftest/clientid.mjs
 
 The self-tests run against a real Hermes store (read-only) and assert the plugin's invariants: the
 client module id matches the package name, the HTTP routes are registered with the right methods, the
-import goes through `agent.steer()` (so it is consumed even when no turn is running), and the injected
-message carries the `form: 'recall'` source shape the chat renderer expects.
+staging is consumed on read, and the attached message carries the `form: 'recall'` source shape the
+chat renderer expects.
 
 ## Privacy
 

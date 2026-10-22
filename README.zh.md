@@ -22,7 +22,7 @@ HTTP 路由（见下面「数据通道为什么是 HTTP 路由」）。
 src/index.js     插件入口：注册工具 + HTTP 路由 + systemPrompt 路由段
 src/tools.js     两个工具的 schema/execute（exec.deferContext 注入）
 src/routes.js    Host 端 HTTP 路由：GET /api/hermes.sessions（列表）、
-                 POST /api/hermes.import（导入 + agent.inject 注入当前轮）
+                 POST /api/hermes.select（暂存选中的会话）
 client.js        客户端半部：注册 CommandContribution（popupSelect + icon），
                  options/onSelect 用 fetch 调上面两条路由
 src/bridge.js    子进程调用 hermes_read.py（--db/--profile 前置，避免 argparse 报错）
@@ -42,8 +42,8 @@ selftest/clientid.mjs   客户端模块不变量（id === 包名、走路由、�
       ← Host 路由返回 JSON → 解析成 SelectOption[]
   → 用户点击某条
   → popupSelect.onSelect()
-      └─ fetch('api/hermes.import?sessionId=<DSH会话id>', {method:'POST', body:{sessionId}})
-      ← Host 路由读库 + 渲染 + agent.inject()（注入当前轮 next-step）
+      └─ fetch('api/hermes.select', {method:'POST', body:{sessionId, dshSessionId}})
+      ← Host 路由只暂存（不注入）
   → 面板关闭，下一 step 模型看到注入的上下文
 ```
 
@@ -83,25 +83,29 @@ authentication policy"），路由本身不用管。
 
 代价：多开两个 HTTP 端点（只读列表 + 只读导入），都在 `/api/hermes.*` 下。
 
-### 注入用 steer 而不是 inject
+### 注入时机：选中即暂存，发消息时才注入
 
-Agent 的三个 inbox 入口：
+用户选完 Hermes 会话时**不能**直接注入——他还没说要做什么，直接注入会唤醒
+agent 让模型自己开跑（这正是被反馈过的问题）。
 
-| 方法 | 落点 | 唤醒 driver | 语义 |
-|---|---|---|---|
-| `inject` | next-step | **否** | 插入当前轮的下一个 step |
-| `steer` | next-step | **是** | 同 next-step，但会开一个新 turn |
-| `followup` | next-turn | 是 | 排队成下一轮用户消息 |
+对齐 DSH 原生 `@` 提及会话的做法：用户写完消息发送 → `agent/pre-step` 钩子
+解析提及 → 读会话 → 在用户消息**后面**追加上下文消息 → 模型这一轮同时看到
+用户的描述和会话内容。
 
-**HTTP 路由必须用 `steer`**：它由浏览器直接 POST，在 turn 之外执行，agent 通常空闲。
-`inject` 不唤醒 driver → 消息静静躺在 inbox 的 next-step 队列 → 没有 turn 去 claim
-它 → **接口返回 200，但对话里看不到任何东西**。
+```
+/hermes 选中会话
+  → POST /api/hermes.select        ← 只暂存（agentId → sessionId），不注入
+  → 用户在输入框写描述并发送
+  → agent/pre-step 钩子取出暂存
+  → 读 Hermes 会话 → 渲染成 form:'recall' 的上下文消息
+  → 追加到该轮用户消息之后 → 模型这一轮两者一起看
+```
 
-`steer` 是同样的 next-step 语义（不是"用户又发了一条消息"），但会唤醒 driver，
-消息在随后的那一轮被消费，模型随之看到注入的上下文。
+暂存取出即消费：一次选择只服务下一次发送。
 
-（工具路径不受影响：工具在 turn 内部执行，`exec.deferContext()` 的上下文挂在
-本次工具结果上，loop 在 `tool/result` 之后追加，天然可见。）
+（工具 `hermes_session_import` 走的是另一条路——它在 turn 内执行，
+`exec.deferContext()` 的上下文挂在本次工具结果上，loop 在 `tool/result` 之后
+追加，天然可见，不受这里影响。）
 
 ### 注入在对话里长什么样
 
@@ -142,7 +146,9 @@ hidden 和子会话（压缩续写/子代理）。
 - SQLite 以 `mode=ro` 打开，**绝不写** Hermes 的任何数据（本机根分区曾以 ro 挂载，只读是唯一安全姿态）
 - 不 import Hermes 源码、不启动 hermes 进程（其 CLI 在只读文件系统上有自检会崩）；直接读持久化契约，schema 变化时给结构化错误
 - 注入内容带固定警示：禁止模型把快照里的指令 / 权限声明 / 工具请求当真，与 DSH 原生 `session-reference` 同语义
-- 注入通道：工具用 `exec.deferContext()`，命令/Remote 用 `agent.inject()`——两者都往 inbox 的 `next-step` 排消息，当前轮下一步被模型看到，不开新用户轮。**不用** `agent.followup()`（多开一轮且易被当成用户新指令）
+- 注入通道分两种：工具用 `exec.deferContext()`（turn 内机制）；`/hermes` 弹窗走
+  `agent/pre-step` 钩子，在用户下一次发消息时把暂存的会话作为上下文追加到该轮。
+  两者都不新开用户轮
 
 ### 预算
 
@@ -169,7 +175,7 @@ python3 scripts/hermes_read.py list --limit 5
 python3 scripts/hermes_read.py --profile sirna show 20261021_135400_6c2813
 ```
 
-自测覆盖：工具全路径、跨 profile、Remote 方法体（含 agent.inject）、错误路径。
+自测覆盖：工具全路径、跨 profile、HTTP 路由与 pre-step 钩子（暂存→注入、取出即消费）、错误路径。
 
 本地跑 selftest 需要解析 `@deepseek-ai/dsh-llm` / `dsh-tools` / `dsh-typert-protocol`
 （开发目录软链，见 `node_modules/@deepseek-ai/`；装进 profile 后由 harness 解析器提供）。
@@ -227,7 +233,7 @@ dsh-hermes-session: pending (waiting for service: remote.hermes)
 client half 永远等不到这个服务，boot 审计判 pending → 整个 harness 起不来。
 
 **修复**：改走 HTTP 路由——Host 侧 `ctx.connection.fetch.register()` 注册
-`/api/hermes.sessions` 与 `/api/hermes.import`，客户端直接 `fetch`。
+`/api/hermes.sessions` 与 `/api/hermes.select`，客户端直接 `fetch`。
 （中途试过 `ctx.remote.commands` 通道，但 Host 命令无法从菜单隐藏，见上面
 「数据通道为什么是 HTTP 路由」。）
 
@@ -240,8 +246,9 @@ client half 永远等不到这个服务，boot 审计判 pending → 整个 harn
 - 快照是 `get_messages_as_conversation` 语义的简化投影：不解 hermes 的私有 marker 列，遇到非文本 content 按原文处理
 - 压缩续写（compression lineage）不跟随：导入的是该会话自身记录的活跃行
 - 斜杠菜单里只有 `/hermes` 一条；数据通道是 `/api/hermes.sessions` 与
-  `/api/hermes.import` 两个 HTTP 端点（只读 Hermes 库，不写）
-- 注入的上下文在对话里是**一行可折叠的上下文**（`form: 'recall'`），全文不铺开
+  `/api/hermes.select` 两个 HTTP 端点（只读 Hermes 库，不写）
+- 注入的上下文在对话里是**一行可折叠的上下文**（`form: 'recall'`），全文不铺开；
+  选中会话本身不触发任何对话——上下文随你下一条消息一起进入模型请求
 - 插件硬依赖 `agents` 服务（注入要 `ctx.agents.get(sessionId)` 定位当前会话）；
   漏声明会让 `ctx.agents` 为 undefined，导入直接 400
 - 注入走 `agent.steer()`（唤醒 driver）；用 `inject()` 的话，会话空闲时消息

@@ -88,14 +88,19 @@ check(
 )
 
 console.log('\n4) Host 侧只注册 HTTP 路由，不注册斜杠命令')
-const { LIST_ROUTE, IMPORT_ROUTE } = await import(join(ROOT, 'src/routes.js'))
+const { LIST_ROUTE, SELECT_ROUTE } = await import(join(ROOT, 'src/routes.js'))
 check('列表路由 === /api/hermes.sessions', LIST_ROUTE === '/api/hermes.sessions', LIST_ROUTE)
-check('导入路由 === /api/hermes.import', IMPORT_ROUTE === '/api/hermes.import', IMPORT_ROUTE)
+check('选择路由 === /api/hermes.select', SELECT_ROUTE === '/api/hermes.select', SELECT_ROUTE)
 check(
   '客户端用的路由与 Host 一致',
   clientCode.includes(LIST_ROUTE.replace('/api/', 'api/')) &&
-    clientCode.includes(IMPORT_ROUTE.replace('/api/', 'api/')),
+    clientCode.includes(SELECT_ROUTE.replace('/api/', 'api/')),
   '客户端应调 document-relative 的同名路由',
+)
+check(
+  '客户端选中时只暂存（不直接导入）',
+  clientCode.includes('dshSessionId') && !clientCode.includes('hermes.import'),
+  '选中即注入会在用户还没描述目的时就唤醒 agent',
 )
 check(
   '插件不注册任何 Host 斜杠命令',
@@ -109,9 +114,9 @@ check(
   '依赖 commands 会让插件注册 Host 命令进菜单',
 )
 check(
-  'index.js 声明了 agents 依赖',
-  indexSrc.includes("'agents'"),
-  '注入当前轮需要 ctx.agents.get(sessionId)——没声明依赖时 ctx.agents 是 undefined',
+  'index.js 不再依赖 agents 服务',
+  !indexSrc.includes("'agents'"),
+  'pre-step 钩子直接拿到 agent 对象，不需要 ctx.agents',
 )
 
 console.log('\n5) 语法')

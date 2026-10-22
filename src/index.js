@@ -4,7 +4,8 @@
  * 背景：Hermes Agent 是服务器上的另一个独立智能体（~/.hermes/state.db 存会话，
  * 消息在 messages 表、会话元信息在 sessions 表）。这里的插件**只读**它，
  * 用三个入口把能力暴露出来：
- *   /hermes                斜杠命令：弹窗列出全部 profile 的会话，点击即导入
+ *   /hermes                斜杠命令：弹窗列出全部 profile 的会话；选中后**暂存**，
+ *                           等你在输入框写完描述一并发送时，才作为上下文挂到那一轮
  *                           （客户端半部 client.js → HTTP 路由 → Host 端 src/routes.js）
  *   hermes_sessions_list   工具：列会话，找 sessionId
  *   hermes_session_import  工具：把指定会话作为"不可信背景"注入当前会话上下文
@@ -14,7 +15,10 @@
  * ctx.remote.<ns> 命名空间由 DSH 自带的 dsh-api-remotes 逐个手工声明，插件自建的
  * TypertRemoteService 不会让客户端出现 remote.hermes。路由两条都绕开这些限制。
  *
- * 依赖策略：硬依赖只有 tools + connection + agents + systemPrompt。读库走子进程
+ * 注入时机对齐 DSH 原生的 `@` 提及会话：上下文随用户消息一起进入模型请求，
+ * 而不是选中即注入——后者会在用户还没说明目的时就唤醒 agent 让模型自己开跑。
+ *
+ * 依赖策略：硬依赖只有 tools + connection + systemPrompt。读库走子进程
  * （scripts/hermes_read.py），所以不需要任何原生 SQLite 依赖，也不会因为
  * Hermes 升级而整体不可用——脚本会以结构化错误告诉模型"库/表/字段变了"。
  */
@@ -22,7 +26,7 @@ import { buildTools } from './tools.js'
 import { registerRoutes } from './routes.js'
 
 export const name = 'dsh-hermes-session'
-export const inject = ['tools', 'connection', 'agents', 'systemPrompt']
+export const inject = ['tools', 'connection', 'systemPrompt']
 
 const DEFAULTS = {
   dbPath: '',

@@ -1,7 +1,7 @@
 /**
- * Host 端 HTTP 路由：客户端 /hermes 弹窗的数据通道。
+ * Host 端 HTTP 路由 + pre-step 钩子：客户端 /hermes 弹窗的数据通道。
  *
- * 为什么走 HTTP 路由而不是斜杠命令：
+ * ## 为什么走 HTTP 路由而不是斜杠命令
  * DSH 的斜杠命令（ctx.commands.register）**无法从菜单隐藏**——CommandDefinition
  * 没有 hidden/visible 字段，客户端 candidates() 直接展开 Host catalog（无过滤钩子），
  * 每注册一条命令，菜单里就多一项。而客户端的 `ctx.remote.<ns>` 命名空间又由 DSH
@@ -12,10 +12,21 @@
  * 精确路由，客户端直接 fetch。路由**不进斜杠菜单**，客户端的 /hermes contribution
  * 是菜单里唯一的条目（还能带图标）。
  *
- * 这条路有现成范例：dsh-session-log-export 的 /export 就是
+ * 范例：dsh-session-log-export 的 /export 就是
  * "ctx.connection.fetch.register({path:'/api/session.export', ...})" + 客户端 fetch。
- * 鉴权由物理载体处理（"after the physical carrier has applied its trust and
- * authentication policy"），路由本身不用管。
+ * 鉴权由物理载体处理，路由本身不用管。
+ *
+ * ## 为什么注入要挂在 pre-step，而不是选中即注入
+ * 选中会话时**不能**直接注入：用户还没说要做什么，直接注入会唤醒 agent 让模型
+ * 自己开跑（用户明确反馈过这个问题）。
+ *
+ * DSH 原生的 `@` 提及会话走的就是这个模式：用户写完消息发送 → agent/pre-step
+ * 钩子解析提及 → 读会话 → 在用户消息**后面**追加上下文消息 → 模型这一轮同时看到
+ * 用户的描述和会话内容。
+ *
+ * 这里照搬：客户端选会话时只**暂存**（POST /api/hermes.import 只写暂存区），
+ * 用户随后在输入框写描述并发送 → pre-step 钩子取出暂存 → 读 Hermes 会话 →
+ * 渲染成 form:'recall' 的上下文消息 → 追加到用户消息之后。
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { runHermesRead, HermesReadError } from './bridge.js'
@@ -23,8 +34,8 @@ import { renderProjection } from './render.js'
 
 /** 会话列表路由（GET）。 */
 export const LIST_ROUTE = '/api/hermes.sessions'
-/** 导入路由（POST，body 是 { sessionId }）。 */
-export const IMPORT_ROUTE = '/api/hermes.import'
+/** 暂存选中的会话（POST，body 是 { sessionId, dshSessionId }）。 */
+export const SELECT_ROUTE = '/api/hermes.select'
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' }
 
@@ -33,10 +44,10 @@ function json(body, status = 200) {
 }
 
 /**
- * 注册两条路由。
+ * 注册路由与 pre-step 钩子。
  * @param {object} ctx Cordis 上下文（需要 connection 服务）
  * @param {object} cfg 插件配置
- * @returns {() => Promise<void>} 注销两个路由
+ * @returns {() => Promise<void>} 注销路由
  */
 export function registerRoutes(ctx, cfg) {
   const fetch = ctx.connection?.fetch
@@ -44,6 +55,10 @@ export function registerRoutes(ctx, cfg) {
     ctx.logger?.warn?.('dsh-hermes-session: connection.fetch 不可用，/hermes 弹窗无法使用')
     return () => Promise.resolve()
   }
+
+  // 每个 DSH 会话一份暂存：agentId → 选中的 Hermes 会话 id。
+  // 选中只是记账，注入要等用户下一次发消息。
+  const pending = new Map()
 
   const disposers = [
     fetch.register({
@@ -71,108 +86,83 @@ export function registerRoutes(ctx, cfg) {
       },
     }),
     fetch.register({
-      path: IMPORT_ROUTE,
+      path: SELECT_ROUTE,
       methods: ['POST'],
       requestBody: 'buffered',
       fetch: async (request) => {
-        let sessionId = ''
+        let payload = {}
         try {
-          const payload = await request.json()
-          sessionId = String(payload?.sessionId || '').trim()
+          payload = await request.json()
         } catch (error) {
           ctx.logger?.warn?.(
-            `dsh-hermes-session: 导入路由收到非 JSON 请求体：${String(error)}`,
+            `dsh-hermes-session: 选择路由收到非 JSON 请求体：${String(error)}`,
           )
           return json({ error: '请求体不是合法 JSON' }, 400)
         }
-        if (!sessionId) {
+        const hermesSessionId = String(payload?.sessionId || '').trim()
+        const dshSessionId = String(payload?.dshSessionId || '').trim()
+        if (!hermesSessionId) {
           return json({ error: 'sessionId 不能为空' }, 400)
         }
-
-        const maxChars = cfg.maxChars
-        const argv = [
-          'show', sessionId,
-          '--max-msgs', String(cfg.maxMessages),
-          '--max-chars', String(maxChars),
-        ]
-
-        let projection
-        try {
-          projection = await runHermesRead(argv, {
-            dbPath: cfg.dbPath,
-            pythonPath: cfg.pythonPath,
-          })
-        } catch (error) {
-          return json({ error: failureText(error) }, 500)
+        if (!dshSessionId) {
+          return json({ error: '缺少 dshSessionId（无法定位要附加到哪个会话）' }, 400)
         }
 
-        const rendered = renderProjection(projection, { maxChars })
-        if (!rendered.text) {
-          return json({ error: `会话 ${sessionId} 没有可导入的对话内容（可能是空会话）。` }, 400)
-        }
-
-        // 注入当前轮：agent.inject 把快照放进 inbox 的 next-step，
-        // 当前轮下一个 step boundary 模型就能看到，不开新用户轮。
-        // agent 由客户端通过 ?sessionId= 传进来。
-        const agentId = new URL(request.url).searchParams.get('sessionId')
-        if (!agentId) {
-          return json({ error: '缺少 sessionId 查询参数（无法定位要注入的会话）' }, 400)
-        }
-        const agent = ctx.agents?.get(agentId)
-        if (!agent) {
-          // ctx.agents 未注入（插件没声明 agents 依赖）或会话不活跃。
-          const hasAgents = typeof ctx.agents?.get === 'function'
-          ctx.logger?.warn?.(
-            `dsh-hermes-session: 导入路由找不到会话 ${agentId}`
-            + `（agents 服务可用：${hasAgents}）`,
-          )
-          return json({
-            error: hasAgents
-              ? `会话 ${agentId} 当前不活跃，无法注入（请在活跃会话中重试）`
-              : `插件未获得 agents 服务，无法定位会话 ${agentId}`,
-          }, 400)
-        }
-
-        // source 用 DSH 的 recall 形态 → 对话列表里渲染成一行可折叠的上下文，
-        // 而不是把全文铺开。契约见 dsh-client-ui-chat 的 recalledSessions()。
-        //
-        // 用 steer 而不是 inject：inject 是 send(input,'next-step',wakeup=false)
-        // ——**不唤醒 driver**。本路由由浏览器直接 POST，在 turn 之外执行，
-        // agent 空闲时注入的消息会静静躺在 inbox 的 next-step 队列里，
-        // 没有 turn 去 claim 它 → 请求 200 但对话里看不到任何东西。
-        // steer 是同样的 next-step 语义，但 wakeup=true：会开一个新 turn，
-        // 消息在那一轮被消费，模型随之看到注入的上下文。
-        const message = createUserMessage({
-          content: [{ type: 'text', text: rendered.text }],
-          source: rendered.source,
-        })
-        if (typeof agent.steer === 'function') {
-          agent.steer(message)
-        } else {
-          // 老版本没有 steer，退回 inject（此时需会话已有在跑的 turn 才可见）。
-          agent.inject(message)
-        }
-
-        const s = projection.session || {}
-        const st = rendered.stats
+        // 只暂存，不注入——注入发生在用户下一次发消息时（pre-step 钩子）。
+        pending.set(dshSessionId, { hermesSessionId, at: Date.now() })
         ctx.logger?.info?.(
-          `dsh-hermes-session: 已注入 ${s.sessionId || sessionId}`
-          + `（${st.includedMessages} 条，${st.chars} 字符）到 ${agentId}`,
+          `dsh-hermes-session: 已暂存 ${hermesSessionId}，等待用户在 ${dshSessionId} 中发送消息`,
         )
-        return json({
-          ok: true,
-          sessionId: s.sessionId || sessionId,
-          title: s.title || '',
-          profile: s.profile || projection.profile || 'default',
-          includedMessages: st.includedMessages,
-          chars: st.chars,
-          budget: st.budget,
-          truncatedHead: st.truncatedHead,
-          droppedForBudget: st.droppedForBudget,
-        })
+        return json({ ok: true, pending: true, hermesSessionId })
       },
     }),
   ]
+
+  // pre-step：用户发消息时，把暂存的 Hermes 会话作为上下文追加到该轮。
+  const onPreStep = async ({ agent, messages, signal }, next) => {
+    const decision = await next()
+    if (decision.kind === 'reject') return decision
+
+    const selected = pending.get(agent.id)
+    if (!selected) return decision
+
+    // 取出即消费：一次选择只服务于下一次发送。
+    pending.delete(agent.id)
+
+    let projection
+    try {
+      projection = await runHermesRead(
+        ['show', selected.hermesSessionId, '--max-msgs', String(cfg.maxMessages), '--max-chars', String(cfg.maxChars)],
+        { dbPath: cfg.dbPath, pythonPath: cfg.pythonPath, signal },
+      )
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `dsh-hermes-session: 读取暂存会话 ${selected.hermesSessionId} 失败：${failureText(error)}`,
+      )
+      return decision
+    }
+
+    const rendered = renderProjection(projection, { maxChars: cfg.maxChars })
+    if (!rendered.text) return decision
+
+    // form:'recall' → 客户端渲染成一行可折叠的上下文，而不是铺开全文。
+    const context = createUserMessage({
+      content: [{ type: 'text', text: rendered.text }],
+      source: rendered.source,
+    })
+
+    ctx.logger?.info?.(
+      `dsh-hermes-session: 已把 ${projection.session?.sessionId || selected.hermesSessionId}`
+      + ` 附加到 ${agent.id} 的本轮消息（${rendered.stats.includedMessages} 条）`,
+    )
+
+    return {
+      ...decision,
+      messages: [...decision.messages, context],
+    }
+  }
+
+  ctx.on('agent/pre-step', onPreStep, { prepend: true })
 
   return async () => {
     for (const dispose of disposers) {
@@ -182,6 +172,7 @@ export function registerRoutes(ctx, cfg) {
         /* 卸载期的错误不阻断其它清理 */
       }
     }
+    pending.clear()
   }
 }
 
