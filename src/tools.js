@@ -163,11 +163,13 @@ export function buildTools(cfg) {
       }
 
       // 关键一步：把快照作为 deferred context 交给当前会话。
-      // source.kind='user' 是 DSH 的通用用户面来源；不写 'system' 以免污染系统提示词边界。
+      // source 用 renderProjection 产出的那份（kind:'session-reference' + form:'recall'），
+      // 这样工具路径和 /hermes 弹窗路径在对话列表里长得一样——都是一行可折叠的
+      // 会话引用，而不是铺开的 user 气泡。
       exec.deferContext(
         createUserMessage({
           content: [{ type: 'text', text: rendered.text }],
-          source: { kind: 'user' },
+          source: rendered.source,
         }),
       )
 

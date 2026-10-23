@@ -31,6 +31,12 @@ window.__ModuleLoader__.load({
     /** 必需服务：slot 注册表 + sessions（取会话作用域 ctx 用）。 */
     const inject = ['slots', 'sessions']
 
+    // 图标：ui-primitives 是 Web shell 的平台 seed（staticModules），任何 client
+    // 模块都能 require 到，无需在 dsh.client 里声明依赖。
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    // 归档箱：取回一个历史会话。
+    const HERMES_ICON = primitives.IconArchiveOutlineRegular
+
     /** Host 路由（document-relative，与 dsh-session-log-export 的做法一致）。 */
     const LIST_ROUTE = 'api/hermes.sessions'
 
@@ -257,19 +263,22 @@ window.__ModuleLoader__.load({
         ? options.filter((o) => `${o.label} ${o.id} ${o.badge || ''}`.toLowerCase().includes(needle))
         : options
 
+      // 按钮样式对齐官方「+技能」按钮的 .sk-chip（同样的高度/内边距/圆角），
+      // 免得在输入框工具行里显得突兀。
       const chipStyle = {
-        border: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12))',
-        borderRadius: 'var(--dsw-radius-sm, 8px)',
-        background: 'transparent',
-        color: 'inherit',
-        cursor: 'pointer',
-        font: 'inherit',
-        fontSize: '12px',
-        lineHeight: '18px',
-        padding: '2px 8px',
         display: 'inline-flex',
         alignItems: 'center',
         gap: '4px',
+        height: '26px',
+        padding: '0 9px',
+        borderRadius: 'var(--dsw-radius-sm, 8px)',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12))',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-secondary, inherit)',
+        fontFamily: 'var(--dsw-font-family, inherit)',
+        fontSize: '12px',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
       }
 
       const dim = 'var(--dsw-alias-label-tertiary, inherit)'
@@ -350,7 +359,15 @@ window.__ModuleLoader__.load({
         'aria-expanded': open,
         style: chipStyle,
         onClick: () => setOpen((v) => !v),
-      }, open ? '× 关闭' : '＋ Hermes')
+      },
+        open
+          ? '× 关闭'
+          : h(React.Fragment, null,
+            // 图标跟着 currentColor 走（IconProps 只有 size/className）。
+            h(HERMES_ICON, { size: 14, className: 'hermes-chip-icon' }),
+            '＋ Hermes',
+          ),
+      )
 
       if (!open) return button
 

@@ -105,6 +105,12 @@ chip 走**原生 `@` 引用同一条路径**插入：在会话作用域上 bail
 `shell.insertReference`，所以样式和原生 `@` 会话引用完全一致——蓝色、可删除、
 文本里带着提及。
 
+附带的上下文**长得也一样**：source 直接复用原生形状
+（`kind: 'session-reference'` + `form: 'recall'`）——客户端只有看到这个 kind 才会给
+会话引用图标和 "contextRecall" 标题，否则退化成通用注入图标；正文也用原生的
+`<referenced-sessions>` 包裹、同一段警示语、同样的 `### Message N: role` 编号。
+用自己的 kind 也能用，但会渲染成"通用注入"——同样的能力，两种长相。
+
 注意：公开给插件的 `inputActions` 只有 `captureInsertion` / `insertText` /
 `setDraft` / `addAttachments` / `removeAttachment` / `pruneAttachments` / `submit`
 ——**没有插 chip 的方法**（`insertReference` 只存在于 SessionInputShell 类内部）。

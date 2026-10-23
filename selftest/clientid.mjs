@@ -77,9 +77,14 @@ check(
   'popupSelect 的 onSelect 拿不到 inputActions',
 )
 check(
-  '客户端按钮是纯文字（与官方 +技能 一致，不塞图标）',
-  !clientCode.includes('dsh-client-ui-primitives') && clientCode.includes('＋ Hermes'),
-  '塞图标组件会撑出多余空白',
+  '客户端按钮带图标（归档箱）',
+  clientCode.includes('dsh-client-ui-primitives') && clientCode.includes('HERMES_ICON'),
+  '图标来自平台 seed，size/className 是 IconProps 的全部字段',
+)
+check(
+  '客户端按钮文字仍是「＋ Hermes」',
+  clientCode.includes('＋ Hermes'),
+  '按钮文案与官方「+技能」一致',
 )
 check(
   '客户端弹窗用 portal 挂到 body',

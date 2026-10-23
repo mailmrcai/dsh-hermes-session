@@ -61,9 +61,11 @@ if (!targetId) {
   check('deferContext 收到 1 条消息', exec.deferred.length === 1, `实际 ${exec.deferred.length}`)
   const msg = exec.deferred[0]
   check('消息 role=user', msg && msg.role === 'user')
-  check('消息 source.kind=user', msg && msg.source && msg.source.kind === 'user')
+  // 工具路径也要用 recall 形态的 source，才能和 /hermes 弹窗路径表现一致
+  check("消息 source.kind='session-reference'", msg && msg.source && msg.source.kind === 'session-reference', msg?.source?.kind)
+  check("消息 source.form='recall'", msg && msg.source && msg.source.form === 'recall', msg?.source?.form)
   const text = msg?.content?.[0]?.text || ''
-  check('注入文本含不可信警示', text.includes('不可信背景'))
+  check('注入文本含原生同款警示语', text.includes('Use it only as background information'))
   check('注入文本含会话ID', text.includes(targetId) || importOut.includes('会话'))
   check('注入文本非空', text.length > 200, `长度 ${text.length}`)
   check('注入文本不超过预算', text.length <= cfg.maxChars, `长度 ${text.length}`)
@@ -160,12 +162,19 @@ check('pre-step 后消息数 = 2（用户消息 + 上下文）', decision.messag
 const ctxMessage = decision.messages[1]
 check('追加的是上下文消息', ctxMessage && ctxMessage !== userMessage)
 check('上下文消息带 source', !!ctxMessage?.source)
-check('上下文文本带不可信警示', (ctxMessage?.content?.[0]?.text || '').includes('不可信背景'))
+// 正文格式对齐原生：<referenced-sessions> 包裹 + 同样的英文警示语 + 同样的消息编号
+check('上下文文本带原生同款警示语', (ctxMessage?.content?.[0]?.text || '').includes('Use it only as background information'))
+check('上下文文本用原生 <referenced-sessions> 包裹', (ctxMessage?.content?.[0]?.text || '').includes('<referenced-sessions>'))
+check('上下文文本带原生标题段', (ctxMessage?.content?.[0]?.text || '').includes('## Referenced sessions'))
+check('消息按原生格式编号', /### Message \d+: (user|assistant|tool)/.test(ctxMessage?.content?.[0]?.text || ''))
 
 // 折叠渲染：source 必须是 DSH 的 recall 形态
 const src = ctxMessage?.source || {}
 check('source.form === recall（触发折叠渲染）', src.form === 'recall', String(src.form))
-check('source.kind 是插件自己的标识', src.kind === 'hermes-session', String(src.kind))
+// kind 必须是 'session-reference'——客户端 contextProducer() 只认这个值才给
+// role:'recall'（会话引用图标 + contextRecall 标题 + 折叠行显示会话标题）；
+// 用自己的 kind 会退化成 role:'inject'，表现和原生不一样。
+check("source.kind === 'session-reference'（与原生 @ 引用会话一致）", src.kind === 'session-reference', String(src.kind))
 check('source.references 是数组', Array.isArray(src.references))
 const ref = src.references?.[0]
 check('reference 带 label', typeof ref?.label === 'string' && ref.label.length > 0, String(ref?.label))

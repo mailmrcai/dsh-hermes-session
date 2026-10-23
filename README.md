@@ -95,6 +95,14 @@ listener hands it to `shell.insertReference`. It therefore renders exactly like 
 harness's own `@`-mentioned session references — blue, removable, and carrying the
 mention in its text.
 
+The attached context looks the same too. Its source reuses the native shape
+(`kind: 'session-reference'`, `form: 'recall'`), which is what makes the client
+give it the session-reference icon and the "context recall" title instead of the
+generic injected-context face; and its body uses the native
+`<referenced-sessions>` framing with the same warning text and the same
+`### Message N: role` numbering. Using a plugin-specific `kind` would work, but it
+would render as a generic injection — same capability, different appearance.
+
 Note on the public API: the `inputActions` face a plugin receives exposes only
 `captureInsertion` / `insertText` / `setDraft` / `addAttachments` /
 `removeAttachment` / `pruneAttachments` / `submit` — there is **no chip-insertion
