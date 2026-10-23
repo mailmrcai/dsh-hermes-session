@@ -91,6 +91,16 @@ check(
   clientCode.includes('createPortal'),
   '官方 +技能 按钮同一做法：避免被输入框容器裁剪',
 )
+check(
+  '客户端把过滤词交给 Host 查（不本地筛）',
+  clientCode.includes('?query=') && clientCode.includes('encodeURIComponent'),
+  '先拉一页再本地筛的话，没拉下来的会话永远搜不到',
+)
+check(
+  '客户端不在本地过滤列表',
+  !clientCode.includes('.filter((o) =>'),
+  '过滤已在 Host 侧完成；本地再筛会误杀"cwd 含关键词但标题不含"的会话',
+)
 
 console.log('\n4) Host 侧只注册 HTTP 路由，不注册斜杠命令')
 const { LIST_ROUTE, MENTION_SCHEME } = await import(join(ROOT, 'src/routes.js'))

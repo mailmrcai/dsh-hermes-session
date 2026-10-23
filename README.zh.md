@@ -166,8 +166,21 @@ Hermes 的会话按 **profile 分库**：
 `--profile` / 工具的 `profile` 参数可限定。每条结果都标注来源 profile。
 
 会话元信息在 `sessions` 表，消息在 `messages` 表（OpenAI 风格：user / assistant(含
-`tool_calls` JSON) / tool(结果 JSON)）。只读行过滤 `active=1`；默认隐藏 archived、
-hidden 和子会话（压缩续写/子代理）。
+`tool_calls` JSON) / tool(结果 JSON)）。只读行过滤 `active=1`；默认隐藏 archived
+和 hidden。
+
+**子会话默认带上**（与 `hermes sessions list` 的默认不同）：Hermes 会把"续写/子代理"
+这类 `parent_session_id` 非空的会话藏起来，但它们往往正是用户想引用的那一段具体工作。
+弹窗列表里会标 `子会话`。工具的 `includeChildren` 参数可控制。
+
+**搜索在 Host 侧做**：过滤框会重新查询整库（全部 profile、全部会话），只返回匹配结果。
+如果改成"先拉一页再本地筛"，没被拉下来的会话就永远搜不到——曾经就因为这个
+（外加写死 `--limit 50`），"DNA-Diffusion训练"这条子会话在弹窗里消失，而
+`hermes sessions list` 里明明有。
+
+**预算按序列化后的长度算**：注入文本的字符上限是硬约束。JSON 会转义引号/换行，
+按原文估会低估，所以预算核算与最终裁剪都以**实际 JSON 长度**为准，注入文本
+永远不会超限。
 
 ### 安全与只读语义
 

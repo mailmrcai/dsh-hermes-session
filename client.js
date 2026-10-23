@@ -48,6 +48,9 @@ window.__ModuleLoader__.load({
       const parts = []
       if (session.messageCount != null) parts.push(`${session.messageCount} 条`)
       if (session.lastActivityAt) parts.push(session.lastActivityAt)
+      // 子会话（压缩续写 / 子代理）标出来——它们以前被默认过滤掉，
+      // 但往往正是用户想引用的那段具体工作。
+      if (session.parentSessionId) parts.push('子会话')
       if (session.cwd) parts.push(session.cwd)
       return {
         id: session.sessionId,
@@ -201,16 +204,23 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState(null)
       const [query, setQuery] = React.useState('')
+      // total：库里一共多少会话；用于提示"只显示前 N 条 / 匹配 N 条"。
+      const [total, setTotal] = React.useState(0)
       // cardRef：弹窗卡片（外部点击判定用）；btnRef：按钮（弹窗定位用）。
       const cardRef = React.useRef(null)
       const btnRef = React.useRef(null)
 
-      const load = React.useCallback(async () => {
+      // 过滤发生在 **Host 侧**：423 个会话全量匹配。
+      // 客户端只拉一页再本地筛的话，永远找不到没被拉下来的那条
+      // （之前 DNA-Diffusion训练 就是这么丢的）。
+      const load = React.useCallback(async (q) => {
         setLoading(true)
         setError(null)
         try {
-          const payload = await callHost(LIST_ROUTE)
+          const url = q ? `${LIST_ROUTE}?query=${encodeURIComponent(q)}` : LIST_ROUTE
+          const payload = await callHost(url)
           setOptions((Array.isArray(payload.sessions) ? payload.sessions : []).map(toOption))
+          setTotal(Number(payload.totalSessions) || 0)
         } catch (e) {
           setError(errorText(e))
         } finally {
@@ -219,8 +229,17 @@ window.__ModuleLoader__.load({
       }, [])
 
       React.useEffect(() => {
-        if (open) load()
-      }, [open, load])
+        if (open) load(query)
+      }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+      // 输入过滤词 → 防抖后重新向 Host 查询（250ms）。
+      React.useEffect(() => {
+        if (!open) return undefined
+        const timer = setTimeout(() => {
+          load(query)
+        }, 250)
+        return () => clearTimeout(timer)
+      }, [query, open, load])
 
       // 点列表外部关闭——与内置 popupSelect 同一手法：
       // capture 阶段的 pointerdown，检查点击目标是否在卡片内。
@@ -258,10 +277,13 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const needle = query.trim().toLowerCase()
-      const filtered = needle
-        ? options.filter((o) => `${o.label} ${o.id} ${o.badge || ''}`.toLowerCase().includes(needle))
-        : options
+      // 过滤已在 Host 侧完成，这里直接用结果——客户端再筛一遍会把
+      // "cwd 里含关键词但标题不含"的会话误杀。
+      const filtered = options
+      // 有过滤词时展示"匹配 N / 共 M"；否则展示"共 M 个会话"。
+      const summary = query.trim()
+        ? `匹配 ${filtered.length} / 共 ${total} 个会话`
+        : `共 ${total} 个会话${filtered.length < total ? `（显示前 ${filtered.length} 个）` : ''}`
 
       // 按钮样式对齐官方「+技能」按钮的 .sk-chip（同样的高度/内边距/圆角），
       // 免得在输入框工具行里显得突兀。
@@ -326,6 +348,9 @@ window.__ModuleLoader__.load({
           }, error)
           : null,
         loading ? h('div', { style: { fontSize: '12px', padding: '4px 2px' } }, '加载中…') : null,
+        !loading && !error
+          ? h('div', { style: { fontSize: '11px', color: dim, padding: '0 2px 4px' } }, summary)
+          : null,
         !loading && !error && filtered.length === 0
           ? h('div', { style: { fontSize: '12px', padding: '4px 2px' } }, '没有匹配的会话')
           : null,

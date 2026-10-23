@@ -131,35 +131,10 @@ export function renderProjection(projection, options) {
 
   const omitted = Number(projection.omittedHead) || 0
 
-  // 预算：提示头 + JSON 骨架固定保留，消息从尾部往前装，装不下就丢最老的并如实报告。
-  // 与原生一致——原生也是先保留最新消息，再逐条丢最老的。
-  const fixed = PROMPT_PREFIX.length + PROMPT_SUFFIX.length + 400
-  let budget = maxChars - fixed
-  const kept = []
-  let droppedOlder = 0
-  for (let i = projected.length - 1; i >= 0; i--) {
-    const item = projected[i]
-    const size = item.text.length + item.role.length + 8
-    if (size > budget) {
-      // 最后一条装不下也塞一次，保证至少有一条内容（否则导入等于空谈）。
-      if (kept.length === 0) {
-        kept.push(clipItem(item, Math.max(0, budget)))
-        droppedOlder += i
-        break
-      }
-      droppedOlder += i + 1
-      break
-    }
-    kept.push(item)
-    budget -= size
-  }
-  kept.reverse()
-  const retained = kept
-
   // 一个会话对象，字段与原生的 data() 对齐（dsh-session-reference 的
   // retainReferencedSession）：sessionId / label / cwd / capturedThroughSeq /
   // conversation。外加 Hermes 特有的 profile 等事实，方便回查。
-  const capture = {
+  const captureBase = {
     sessionId: session.sessionId || '',
     label: session.title || session.sessionId || 'Hermes 会话',
     cwd: session.cwd || null,
@@ -170,12 +145,58 @@ export function renderProjection(projection, options) {
     model: session.model || null,
     startedAt: session.startedAt || null,
     lastActivityAt: session.lastActivityAt || null,
-    conversation: retained,
   }
+
+  // 预算按**实际 JSON 长度**算，不按原文长度——JSON 会转义引号/换行/控制字符，
+  // 原文 1 字符可能变成 2~6 字符（\n → \\n 是 2 倍，反斜杠 + 引号更多）。
+  // 按原文估会严重低估，最终文本超出预算。
+  const skeletonLen = JSON.stringify({ ...captureBase, conversation: [] }).length
+  const overhead = PROMPT_PREFIX.length + PROMPT_SUFFIX.length + skeletonLen
+
+  // 预算：提示头 + JSON 骨架固定保留，消息从尾部往前装，装不下就丢最老的并如实报告。
+  // 与原生一致——原生也是先保留最新消息，再逐条丢最老的。
+  let budget = maxChars - overhead
+  const kept = []
+  let droppedOlder = 0
+  for (let i = projected.length - 1; i >= 0; i--) {
+    const item = projected[i]
+    // 每条的真实成本 = 序列化后的长度 + 数组分隔符。
+    const cost = JSON.stringify(item).length + 1
+    if (cost > budget) {
+      // 最后一条装不下也塞一次，保证至少有一条内容（否则导入等于空谈）。
+      if (kept.length === 0) {
+        kept.push(clipItem(item, Math.max(0, budget)))
+        droppedOlder += i
+        break
+      }
+      droppedOlder += i + 1
+      break
+    }
+    kept.push(item)
+    budget -= cost
+  }
+  kept.reverse()
+  const retained = kept
 
   // 原生 renderPrompt()：PROMPT_PREFIX + stringifyTagSafeJson(data) + PROMPT_SUFFIX，
   // data 是**数组**（每个元素一个会话）。
-  const json = stringifyTagSafeJson([capture])
+  const buildJson = (items) => stringifyTagSafeJson([{ ...captureBase, conversation: items }])
+  let json = buildJson(retained)
+
+  // 精确核对：估算仍可能偏小（转义开销是估的），最终文本必须真的 ≤ 预算。
+  // 从最老的一条开始丢，丢到装得下为止——预算是硬约束，不能靠估算。
+  while (retained.length > 1 && PROMPT_PREFIX.length + json.length + PROMPT_SUFFIX.length > maxChars) {
+    retained.shift()
+    droppedOlder++
+    json = buildJson(retained)
+  }
+  // 只剩一条时仍超预算：把这一条按剩余空间裁剪。
+  if (retained.length === 1 && PROMPT_PREFIX.length + json.length + PROMPT_SUFFIX.length > maxChars) {
+    const room = maxChars - PROMPT_PREFIX.length - PROMPT_SUFFIX.length - skeletonLen - 1
+    retained[0] = clipItem(retained[0], Math.max(0, room))
+    json = buildJson(retained)
+  }
+
   const text = retained.length === 0 ? '' : `${PROMPT_PREFIX}${json}${PROMPT_SUFFIX}`
 
   return {

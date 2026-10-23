@@ -135,6 +135,34 @@ check('列表返回含 sessions 数组', Array.isArray(payload.sessions), String
 check('列表每条带 sessionId', (payload.sessions || []).every((s) => typeof s.sessionId === 'string'))
 check('列表会话数 > 0', (payload.sessions || []).length > 0, `条数 ${payload.sessions?.length}`)
 
+// 列表必须覆盖全库（不止前 50 条），且必须包含子会话。
+// 回归过的坑：曾写死 --limit 50 且不传 --include-children，导致
+// "DNA-Diffusion训练"（一个子会话）永远不出现——而 hermes CLI 能看到。
+check('列表带总数', typeof payload.totalSessions === 'number', String(payload.totalSessions))
+check('列表条数远大于 50（不是写死一页）', (payload.sessions || []).length > 50, `条数 ${payload.sessions?.length}`)
+check('列表包含子会话（parentSessionId 非空）', (payload.sessions || []).some((s) => s.parentSessionId))
+check('列表里能查到子会话（Host 侧过滤）', await (async () => {
+  const child = (payload.sessions || []).find((s) => s.parentSessionId)
+  if (!child) return false
+  const q = await (await listRoute.fetch(new Request(
+    `http://x${LIST_ROUTE}?query=${encodeURIComponent(child.title || child.sessionId)}`,
+  ))).json()
+  return (q.sessions || []).some((s) => s.sessionId === child.sessionId)
+})())
+
+// 服务端查询：过滤必须发生在 Host 侧（否则搜不到没被拉下来的会话）
+const qRoute = await (await listRoute.fetch(new Request(
+  `http://x${LIST_ROUTE}?query=${encodeURIComponent('DNA-Diffusion')}`,
+))).json()
+check('query 参数生效（服务端过滤）', (qRoute.sessions || []).length > 0, `匹配 ${qRoute.sessions?.length}`)
+check('query 结果确实被过滤（少于全量）', (qRoute.sessions || []).length < (payload.sessions || []).length,
+  `匹配 ${qRoute.sessions?.length} / 全量 ${payload.sessions?.length}`)
+check('query 结果带 title', (qRoute.sessions || []).every((s) => typeof s.title === 'string'))
+const noMatch = await (await listRoute.fetch(new Request(
+  `http://x${LIST_ROUTE}?query=${encodeURIComponent('__no_such_session_zzz__')}`,
+))).json()
+check('无匹配时返回空数组（不报错）', Array.isArray(noMatch.sessions) && noMatch.sessions.length === 0)
+
 // 提及解析：@[标题](dsh-hermes:<base64url>) → 引用 + 文本规范化
 const target = payload.sessions[0].sessionId
 const b64 = Buffer.from(JSON.stringify(target), 'utf8')

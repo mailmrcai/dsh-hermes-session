@@ -59,9 +59,22 @@ export function registerRoutes(ctx, cfg) {
       path: LIST_ROUTE,
       methods: ['GET'],
       requestBody: 'buffered',
-      fetch: async () => {
+      fetch: async (request) => {
         try {
-          const result = await runHermesRead(['list', '--limit', '50'], {
+          // 查询词从 URL 上取，让过滤发生在 **Host 侧**（423 个会话全量过滤），
+          // 而不是客户端先拉一小截再在本地筛——后者永远筛不到没被拉下来的会话。
+          const url = new URL(request.url)
+          const query = (url.searchParams.get('query') || '').trim()
+          // 子会话（压缩续写 / 子代理）默认被 hermes_read.py 过滤掉，但它们往往
+          // 正是用户想引用的那一段（父会话是主线，子会话是具体任务）。默认带上。
+          const includeChildren = url.searchParams.get('children') !== '0'
+          const limit = clampLimit(url.searchParams.get('limit'), 500, 1, 2000)
+
+          const argv = ['list', '--limit', String(limit)]
+          if (query) argv.push('--query', query)
+          if (includeChildren) argv.push('--include-children')
+
+          const result = await runHermesRead(argv, {
             dbPath: cfg.dbPath,
             pythonPath: cfg.pythonPath,
           })
@@ -72,8 +85,14 @@ export function registerRoutes(ctx, cfg) {
             messageCount: s.messageCount ?? 0,
             cwd: s.cwd || '',
             lastActivityAt: s.lastActivityAt || s.startedAt || '',
+            parentSessionId: s.parentSessionId || '',
           }))
-          return json({ sessions })
+          return json({
+            sessions,
+            totalSessions: result.totalSessions ?? sessions.length,
+            matched: sessions.length,
+            query,
+          })
         } catch (error) {
           return json({ error: failureText(error) }, 500)
         }
@@ -222,6 +241,19 @@ async function buildContext(cfg, reference, signal) {
     content: [{ type: 'text', text: rendered.text }],
     source: rendered.source,
   })
+}
+
+/**
+ * 把请求参数里的 limit 夹到 [min, max]。缺省或非法值退回 fallback。
+ *
+ * 注意 `Number(null)` 是 0（有限数！），所以"参数缺失"必须显式判空——
+ * 否则缺省会静默变成 min=1，列表只剩一条。
+ */
+function clampLimit(value, fallback, min, max) {
+  if (value === null || value === undefined || value === '') return fallback
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.trunc(n)))
 }
 
 /** 把 HermesReadError / 通用 Error 变成人类可读的失败文案。 */

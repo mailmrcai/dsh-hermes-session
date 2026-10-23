@@ -71,8 +71,15 @@ src/routes.js  ◀──HTTP── client.js ─────┘                 
 - **Multi-profile aware.** Hermes keeps one database per profile. The default database holds only the
   `default` profile, so reading it alone would miss every other profile's sessions. The plugin scans all
   of them and labels each result with its source profile.
+- **Child sessions are included.** Hermes hides sessions that continue a parent thread (compaction
+  rewrites, sub-agents) unless you ask for them — but those are often exactly the specific stretch of
+  work you want to cite. The picker lists them and marks them `子会话` / `sub-session`.
+- **Search runs on the host.** The filter box re-queries the whole store (all profiles, all sessions)
+  and only the matches are returned. Filtering a pre-fetched page instead would make sessions that were
+  never fetched unsearchable.
 - **Bounded.** Message bodies are clipped, older messages are dropped first, and the truncation is
-  reported in the injected header rather than hidden.
+  reported in the injected header rather than hidden. The budget is enforced against the **serialized**
+  size, so the injected text never exceeds the configured limit.
 
 ## How the pick reaches the model
 
