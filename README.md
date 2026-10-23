@@ -10,8 +10,7 @@ offers three ways in:
 
 | Entry point | Shape | What it does |
 |---|---|---|
-| `＋ Hermes` | Composer button | Opens a searchable list of sessions across every profile; picking one writes a mention into your draft |
-| `/hermes` | Slash command | Same list, for the slash menu (the command shows the list; use the button to write into the draft) |
+| `＋ Hermes` | Composer button | Opens a searchable list of sessions across every profile; picking one inserts a reference chip into your draft |
 | `hermes_sessions_list` | Model tool | Lists sessions (title / working directory / message count / last activity) across all profiles, sorted by recency |
 | `hermes_session_import` | Model tool | Imports one session by id (a unique prefix is enough) |
 
@@ -82,12 +81,17 @@ Picking a session writes a **Markdown mention into your draft** — exactly like
 
 ```
 ＋ Hermes → pick a session
-          → the draft gets  @[Session title](dsh-hermes:<base64url>)
+          → the draft gets a blue reference chip:
+            @[Session title](dsh-hermes:<base64url>)
           → you type your request and send
           → agent/pre-step resolves the mention
           → reads the Hermes session, renders it as a form:'recall' context message
           → appended after your message → the model sees both in one turn
 ```
+
+The chip is inserted through the editor's reference API (`appearance: 'session'`), so it
+renders exactly like the harness's own `@`-mentioned session references — blue, removable,
+and carrying the mention in its text.
 
 Two consequences worth knowing:
 

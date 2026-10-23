@@ -1,17 +1,20 @@
 /**
- * 客户端半部：Hermes 会话选择器。
+ * 客户端半部：Hermes 会话选择器（输入框工具行的「＋ Hermes」按钮）。
  *
- * 交互对齐官方「+技能」按钮（@weibaohui/skills-management 的做法）：
+ * 交互对齐官方「+技能」按钮（@weibaohui/skills-management）：
  *   1. 在输入框工具行（conversation.input.left）放一个按钮
- *   2. 点开一个可搜索的会话列表
- *   3. 选中后把一条 **Markdown 提及** 插入草稿：`@[标题](dsh-hermes:<base64url>)`
- *      —— 用 session slot 的标准 inputActions 面写入（captureInsertion() +
- *      insertText()），这样草稿里可见、可编辑、可删除
- *   4. 用户写完描述一并发送；Host 侧 agent/pre-step 钩子解析该提及，
+ *   2. 点开一个可搜索的会话列表；点列表外部或按 Esc 关闭
+ *   3. 选中后插入一条**引用 chip**（appearance: 'session'）——与原生 `@` 会话引用
+ *      同样的蓝色样式，chip 里的文本是 `@[标题](dsh-hermes:<base64url>)`
+ *   4. 用户写完描述一并发送；Host 侧 agent/pre-step 钩子解析 chip 里的提及，
  *      读 Hermes 会话并把内容作为上下文追加到那一轮
  *
  * 为什么不直接注入：直接注入会在用户还没说明目的时就唤醒 agent 让模型自己开跑。
- * 插入草稿把「选上下文」和「说诉求」拆成两步，一次发送里两者一起处理。
+ * 插入 chip 把「选上下文」和「说诉求」拆成两步，一次发送里两者一起处理。
+ *
+ * 为什么不用斜杠命令：commandUi 的 popupSelect 的 onSelect 只拿到
+ * ClientSessionContext，没有 inputActions，写不进草稿；而且弹窗要自己实现
+ * 「点外部关闭」。所以只保留输入框按钮这一条路径。
  *
  * 数据通道走 HTTP 路由（不是斜杠命令）：斜杠命令无法从菜单隐藏——CommandDefinition
  * 没有 hidden/visible 字段，客户端 candidates() 直接展开 Host catalog，无过滤钩子。
@@ -25,8 +28,8 @@
 window.__ModuleLoader__.load({
   id: 'dsh-hermes-session',
   factory(require) {
-    /** 必需服务：命令贡献注册表 + slot 注册表。 */
-    const inject = ['commandUi', 'slots']
+    /** 必需服务：slot 注册表。 */
+    const inject = ['slots']
 
     // 图标：ui-primitives 是 Web shell 的平台 seed（staticModules），任何 client
     // 模块都能 require 到，无需在 dsh.client 里声明依赖。
@@ -39,7 +42,7 @@ window.__ModuleLoader__.load({
     /** 提及 scheme：与官方 dsh-session: 平行，Host 侧据此解析。 */
     const MENTION_SCHEME = 'dsh-hermes:'
 
-    /** 会话一条 → 弹窗一行。badge 显示 profile，detail 显示消息数和时间。 */
+    /** 会话一条 → 列表一行。badge 显示 profile，detail 显示消息数和时间。 */
     function toOption(session) {
       const parts = []
       if (session.messageCount != null) parts.push(`${session.messageCount} 条`)
@@ -96,41 +99,45 @@ window.__ModuleLoader__.load({
       return `${MENTION_SCHEME}${base64}`
     }
 
-    /** 提及文本：`@[标题](dsh-hermes:...)`。 */
+    /** 提及文本：`@[标题](dsh-hermes:...)`——chip 里的可见文本。 */
     function mentionText(session) {
       const label = (session.title || session.sessionId || 'Hermes 会话').replace(/[[\]]/g, '')
       return `@[${label}](${encodeMention(session.sessionId)})`
     }
 
     /**
-     * 把文本插入当前草稿。
+     * 把会话作为**引用 chip**插入草稿。
      *
-     * dsh 0.2.x：slot 拿到的是标准 inputActions 面，span 必须在插入时刻
-     * captureInsertion() 取（带草稿版本号），从 React prop 里读的 span 永远滞后一版，
-     * 会被编辑器的 span-CAS 静默拒绝——弹窗关掉但草稿里什么都没变。
+     * 用 inputActions.addFiles 而不是 insertText：addFiles 插的是编辑器的
+     * reference chip，appearance:'session' 让它渲染成与原生 `@` 会话引用同样的
+     * 蓝色样式；insertText 只会插一段纯文本。
      *
      * @param {object} inputActions session slot 的 inputActions
-     * @param {string} text 要插入的文本
+     * @param {{sessionId: string, title: string}} session 选中的会话
      * @returns {boolean} 是否插入成功
      */
-    function insertIntoDraft(inputActions, text) {
-      if (!inputActions
-        || typeof inputActions.captureInsertion !== 'function'
-        || typeof inputActions.insertText !== 'function') return false
+    function insertChip(inputActions, session) {
+      if (!inputActions || typeof inputActions.addFiles !== 'function') return false
+      const mention = mentionText(session)
       try {
-        const span = inputActions.captureInsertion()
-        if (!span || typeof span.draftRev !== 'number') return false
-        return inputActions.insertText(text, span) === true
+        // 参考 chips 无附件 id：第二个参数传空数组。
+        return inputActions.addFiles(
+          [{
+            source: 'reference',
+            ref: mention,
+            label: session.title || session.sessionId || 'Hermes 会话',
+            appearance: 'session',
+            clipboardText: mention,
+          }],
+          [],
+        ) === true
       } catch {
         return false
       }
     }
 
     /**
-     * 输入框按钮：点开会话列表，选中后把提及写进草稿。
-     *
-     * 自绘列表而不复用 commandUi 的 popupSelect：popupSelect 的 onSelect 只拿到
-     * ClientSessionContext（没有 inputActions），而写草稿必须要 inputActions。
+     * 输入框按钮：点开会话列表，选中后插入引用 chip。
      *
      * @param {object} props slot 注入的 props（含 inputActions、sessionId）
      */
@@ -142,6 +149,7 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState(null)
       const [query, setQuery] = React.useState('')
+      const cardRef = React.useRef(null)
 
       const load = React.useCallback(async () => {
         setLoading(true)
@@ -160,14 +168,39 @@ window.__ModuleLoader__.load({
         if (open) load()
       }, [open, load])
 
+      // 点列表外部关闭——与内置 popupSelect 同一手法：
+      // capture 阶段的 pointerdown，检查点击目标是否在卡片内。
+      React.useEffect(() => {
+        if (!open) return undefined
+        const onPointerDown = (ev) => {
+          if (cardRef.current !== null && ev.target instanceof Node && cardRef.current.contains(ev.target)) return
+          setOpen(false)
+        }
+        document.addEventListener('pointerdown', onPointerDown, true)
+        return () => {
+          document.removeEventListener('pointerdown', onPointerDown, true)
+        }
+      }, [open])
+
+      // Esc 关闭。
+      React.useEffect(() => {
+        if (!open) return undefined
+        const onKey = (ev) => {
+          if (ev.key === 'Escape' && ev.isComposing !== true) setOpen(false)
+        }
+        document.addEventListener('keydown', onKey)
+        return () => {
+          document.removeEventListener('keydown', onKey)
+        }
+      }, [open])
+
       const pick = (option) => {
-        const text = mentionText({ sessionId: option.id, title: option.label })
-        const ok = insertIntoDraft(props.inputActions, text)
+        const ok = insertChip(props.inputActions, { sessionId: option.id, title: option.label })
         if (ok) {
           setOpen(false)
           setQuery('')
         } else {
-          setError('无法写入草稿（编辑器正忙或草稿已变化），请重试')
+          setError('无法插入草稿（编辑器正忙或草稿已变化），请重试')
         }
       }
 
@@ -200,7 +233,10 @@ window.__ModuleLoader__.load({
           'aria-expanded': 'false',
           style: chipStyle,
           onClick: () => setOpen(true),
-        }, '＋ Hermes')
+        }, h('span', {
+          'aria-hidden': 'true',
+          style: { display: 'inline-flex', width: '14px', height: '14px' },
+        }, HERMES_ICON), '＋ Hermes')
       }
 
       const dim = 'var(--dsw-alias-label-tertiary, inherit)'
@@ -215,6 +251,7 @@ window.__ModuleLoader__.load({
           onClick: () => setOpen(false),
         }, '× 关闭'),
         h('div', {
+          ref: cardRef,
           role: 'dialog',
           'aria-label': '选择 Hermes 会话',
           style: {
@@ -283,39 +320,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 客户端插件体：注册 /hermes 斜杠命令 + 输入框按钮。
+     * 客户端插件体：在输入框工具行注册「＋ Hermes」按钮。
      * @param {object} ctx 客户端根 context
      */
     function apply(ctx) {
-      // 1) 斜杠命令：/hermes 打开会话列表（commandUi 的 popupSelect 自带搜索框与图标）。
-      //    注意：它的 onSelect 拿不到 inputActions，写不进草稿——真正能写草稿的是
-      //    下面输入框按钮那条路径。所以 /hermes 只负责"看列表"，插入请用按钮。
-      ctx.inject(['commandUi'], (scope) => {
-        const command = scope.get('commandUi')
-
-        scope.effect(() => command.register({
-          name: 'hermes',
-          label: () => 'Hermes 会话',
-          description: () => '选择一个 Hermes 会话，其内容将随本条消息注入上下文',
-          icon: HERMES_ICON,
-          available: () => true,
-          ui: {
-            kind: 'popupSelect',
-            options: async () => {
-              const payload = await callHost(LIST_ROUTE)
-              const sessions = Array.isArray(payload.sessions) ? payload.sessions : []
-              return sessions.map(toOption)
-            },
-            onSelect: async () => {
-              // popupSelect 的 onSelect 拿不到 inputActions，无法写草稿。
-              // 这里提示用户用输入框的「＋ Hermes」按钮完成插入。
-              throw new Error('请用输入框工具行的「＋ Hermes」按钮选择会话（斜杠命令无法写入草稿）')
-            },
-          },
-        }), 'dsh-hermes-session: /hermes contribution')
-      })
-
-      // 2) 输入框工具行按钮：与「+技能」同位置，选中后写入草稿。
       ctx.inject(['slots'], (scope) => {
         const slots = scope.get('slots')
         scope.effect(() => slots.inject('conversation.input.left', () => slots.register({

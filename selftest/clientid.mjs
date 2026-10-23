@@ -72,14 +72,9 @@ check(
   '数据通道是 /api/hermes.sessions 与 /api/hermes.import',
 )
 check(
-  '客户端用 commandUi.register（contribution 才支持 icon）',
-  clientCode.includes('command.register('),
-  'decorate 没有 icon 字段',
-)
-check(
-  '客户端声明了 icon',
-  clientCode.includes('icon:'),
-  '菜单图标来自 CommandContribution.icon',
+  '客户端不再注册斜杠命令（写不进草稿，已删除）',
+  !clientCode.includes('commandUi') && !clientCode.includes('command.register('),
+  'popupSelect 的 onSelect 拿不到 inputActions',
 )
 check(
   '客户端从平台 seed 取图标',
@@ -107,14 +102,24 @@ check(
   '草稿写入需要 slot 的 inputActions 面，popupSelect 拿不到',
 )
 check(
-  '客户端用 inputActions 写草稿',
-  clientCode.includes('captureInsertion') && clientCode.includes('insertText'),
-  'span 必须在插入时刻 captureInsertion() 取，从 prop 读会被 span-CAS 静默拒绝',
+  '客户端用 addFiles 插入引用 chip',
+  clientCode.includes('addFiles(') && clientCode.includes('appearance:'),
+  "appearance:'session' 才是原生 @ 引用的蓝色 chip 样式，insertText 只插纯文本",
 )
 check(
   '客户端插入的是可编辑的提及',
   clientCode.includes('@['),
   '提及随用户消息一起发送，Host 侧 pre-step 解析后挂上下文',
+)
+check(
+  '客户端实现了点外部关闭',
+  clientCode.includes("addEventListener('pointerdown'") && clientCode.includes('contains('),
+  '与内置 popupSelect 同一手法：capture 阶段 pointerdown + contains 检查',
+)
+check(
+  '客户端实现了 Esc 关闭',
+  clientCode.includes("addEventListener('keydown'"),
+  '与官方 +技能 按钮一致',
 )
 check(
   '插件不注册任何 Host 斜杠命令',

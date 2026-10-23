@@ -7,8 +7,7 @@
 
 | 入口 | 形态 | 作用 |
 |---|---|---|
-| `＋ Hermes` | 输入框工具行按钮 | 弹窗列出全部 profile 的会话，选中后把提及写进草稿 |
-| `/hermes` | 斜杠命令（带图标） | 同样的会话列表，供斜杠菜单使用 |
+| `＋ Hermes` | 输入框工具行按钮 | 弹窗列出全部 profile 的会话，选中后插入一个引用 chip 到草稿 |
 | `hermes_sessions_list` | 模型工具 | 列会话（标题 / 目录 / 消息数 / 最后活动），默认扫全部 profile 合并排序 |
 | `hermes_session_import` | 模型工具 | 按 sessionId 导入（支持唯一前缀），注入文本带警示头和截断事实 |
 
@@ -94,12 +93,17 @@ Markdown 提及写进草稿**，用户写完描述一并发送。
 
 ```
 ＋ Hermes 选中会话
-  → 草稿里出现  @[会话标题](dsh-hermes:<base64url>)
+  → 草稿里出现一个蓝色引用 chip：@[会话标题](dsh-hermes:<base64url>)
   → 用户在输入框写描述并发送
   → agent/pre-step 钩子解析这个提及
   → 读 Hermes 会话 → 渲染成 form:'recall' 的上下文消息
   → 追加到该轮用户消息之后 → 模型这一轮两者一起看
 ```
+
+chip 走编辑器的引用 API 插入（`appearance: 'session'`），所以样式和原生 `@`
+会话引用完全一致——蓝色、可删除、文本里带着提及。
+
+弹窗点外部或按 Esc 关闭（与内置 popupSelect 同一手法）。
 
 两个直接后果：
 
