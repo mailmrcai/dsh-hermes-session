@@ -135,11 +135,19 @@ check('列表返回含 sessions 数组', Array.isArray(payload.sessions), String
 check('列表每条带 sessionId', (payload.sessions || []).every((s) => typeof s.sessionId === 'string'))
 check('列表会话数 > 0', (payload.sessions || []).length > 0, `条数 ${payload.sessions?.length}`)
 
-// 列表必须覆盖全库（不止前 50 条），且必须包含子会话。
+// 列表默认给出最近 100 条（按最后活动时间降序），且必须包含子会话。
 // 回归过的坑：曾写死 --limit 50 且不传 --include-children，导致
 // "DNA-Diffusion训练"（一个子会话）永远不出现——而 hermes CLI 能看到。
 check('列表带总数', typeof payload.totalSessions === 'number', String(payload.totalSessions))
-check('列表条数远大于 50（不是写死一页）', (payload.sessions || []).length > 50, `条数 ${payload.sessions?.length}`)
+check('默认返回最近 100 条', (payload.sessions || []).length === 100, `条数 ${payload.sessions?.length}`)
+check('总数大于返回条数（确实只列了一页）', payload.totalSessions > (payload.sessions || []).length,
+  `总数 ${payload.totalSessions} / 返回 ${payload.sessions?.length}`)
+// 按最后活动时间严格降序（用户要求：按最近一次会话时间排序）
+check('按最后活动时间降序', await (async () => {
+  const times = (payload.sessions || []).map((s) => s.lastActivityAt || '').filter(Boolean)
+  if (times.length < 2) return false
+  return times.every((t, i) => i === 0 || times[i - 1] >= t)
+})())
 check('列表包含子会话（parentSessionId 非空）', (payload.sessions || []).some((s) => s.parentSessionId))
 check('列表里能查到子会话（Host 侧过滤）', await (async () => {
   const child = (payload.sessions || []).find((s) => s.parentSessionId)

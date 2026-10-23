@@ -280,10 +280,11 @@ window.__ModuleLoader__.load({
       // 过滤已在 Host 侧完成，这里直接用结果——客户端再筛一遍会把
       // "cwd 里含关键词但标题不含"的会话误杀。
       const filtered = options
-      // 有过滤词时展示"匹配 N / 共 M"；否则展示"共 M 个会话"。
+      // 有过滤词时展示"匹配 N / 共 M"；否则说明默认只列了最近 100 条，
+      // 更早的会话需要用过滤框搜（服务端全量匹配）。
       const summary = query.trim()
         ? `匹配 ${filtered.length} / 共 ${total} 个会话`
-        : `共 ${total} 个会话${filtered.length < total ? `（显示前 ${filtered.length} 个）` : ''}`
+        : `最近 ${filtered.length} 个会话（共 ${total} 个，按最后活动时间排序）`
 
       // 按钮样式对齐官方「+技能」按钮的 .sk-chip（同样的高度/内边距/圆角），
       // 免得在输入框工具行里显得突兀。

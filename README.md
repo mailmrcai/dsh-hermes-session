@@ -77,6 +77,8 @@ src/routes.js  ◀──HTTP── client.js ─────┘                 
 - **Search runs on the host.** The filter box re-queries the whole store (all profiles, all sessions)
   and only the matches are returned. Filtering a pre-fetched page instead would make sessions that were
   never fetched unsearchable.
+- **Shows the 100 most recent by default.** Sessions are ordered by last activity across every profile,
+  newest first. Older ones stay reachable — type in the filter box to search the whole store.
 - **Bounded.** Message bodies are clipped, older messages are dropped first, and the truncation is
   reported in the injected header rather than hidden. The budget is enforced against the **serialized**
   size, so the injected text never exceeds the configured limit.

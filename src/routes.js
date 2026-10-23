@@ -68,7 +68,9 @@ export function registerRoutes(ctx, cfg) {
           // 子会话（压缩续写 / 子代理）默认被 hermes_read.py 过滤掉，但它们往往
           // 正是用户想引用的那一段（父会话是主线，子会话是具体任务）。默认带上。
           const includeChildren = url.searchParams.get('children') !== '0'
-          const limit = clampLimit(url.searchParams.get('limit'), 500, 1, 2000)
+          // 默认按最后活动时间取**最新 100 条**（Python 侧跨库合并后全局降序）。
+          // 更早的会话用过滤框查（服务端全量匹配），不必一次全拉。
+          const limit = clampLimit(url.searchParams.get('limit'), 100, 1, 2000)
 
           const argv = ['list', '--limit', String(limit)]
           if (query) argv.push('--query', query)
