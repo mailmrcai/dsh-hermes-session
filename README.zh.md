@@ -107,9 +107,13 @@ chip 走**原生 `@` 引用同一条路径**插入：在会话作用域上 bail
 
 附带的上下文**长得也一样**：source 直接复用原生形状
 （`kind: 'session-reference'` + `form: 'recall'`）——客户端只有看到这个 kind 才会给
-会话引用图标和 "contextRecall" 标题，否则退化成通用注入图标；正文也用原生的
-`<referenced-sessions>` 包裹、同一段警示语、同样的 `### Message N: role` 编号。
+会话引用图标和 "contextRecall" 标题，否则退化成通用注入图标；正文也与原生
+逐字同构：同样的 `## Referenced sessions` 标题、同一段警示语、同样的
+`<referenced-sessions>` 包裹，JSON 载荷是**数组**，每个会话对象里的
+`conversation` 字段是 `[{ role, text }]`，text 是完整原文。
 用自己的 kind 也能用，但会渲染成"通用注入"——同样的能力，两种长相。
+因为模型侧看到的提示结构与引用 DSH 会话时一致，模型读 Hermes 快照的方式
+和读 DSH 会话快照的方式也一致。
 
 注意：公开给插件的 `inputActions` 只有 `captureInsertion` / `insertText` /
 `setDraft` / `addAttachments` / `removeAttachment` / `pruneAttachments` / `submit`

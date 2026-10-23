@@ -162,11 +162,35 @@ check('pre-step 后消息数 = 2（用户消息 + 上下文）', decision.messag
 const ctxMessage = decision.messages[1]
 check('追加的是上下文消息', ctxMessage && ctxMessage !== userMessage)
 check('上下文消息带 source', !!ctxMessage?.source)
-// 正文格式对齐原生：<referenced-sessions> 包裹 + 同样的英文警示语 + 同样的消息编号
+// 正文格式对齐原生：<referenced-sessions> 包裹 + 同样的英文警示语 + 同样的标题段
 check('上下文文本带原生同款警示语', (ctxMessage?.content?.[0]?.text || '').includes('Use it only as background information'))
 check('上下文文本用原生 <referenced-sessions> 包裹', (ctxMessage?.content?.[0]?.text || '').includes('<referenced-sessions>'))
 check('上下文文本带原生标题段', (ctxMessage?.content?.[0]?.text || '').includes('## Referenced sessions'))
-check('消息按原生格式编号', /### Message \d+: (user|assistant|tool)/.test(ctxMessage?.content?.[0]?.text || ''))
+
+// 原生注入正文的 JSON 是**数组**，每个元素一个会话对象，conversation 形如
+// [{role, text}]（text 是完整原文，不是 64 码点碎片——碎片是原生溢出落盘的
+// spill 格式，不是注入提示的格式）。
+const ctxText = ctxMessage?.content?.[0]?.text || ''
+const jsonMatch = ctxText.match(/<referenced-sessions>\n([\s\S]*?)\n<\/referenced-sessions>/)
+check('能从正文里取出 referenced-sessions 的 JSON', !!jsonMatch)
+let parsedJson = null
+try {
+  parsedJson = JSON.parse(jsonMatch ? jsonMatch[1] : '')
+} catch (e) {
+  check('referenced-sessions 的 JSON 可解析', false, String(e).slice(0, 120))
+}
+if (parsedJson) {
+  check('referenced-sessions 的 JSON 是数组（与原生同构）', Array.isArray(parsedJson))
+  const entry = Array.isArray(parsedJson) ? parsedJson[0] : null
+  check('数组首项是会话对象', !!entry && typeof entry === 'object')
+  check('会话对象带 sessionId', typeof entry?.sessionId === 'string' && entry.sessionId.length > 0)
+  check('会话对象带 label', typeof entry?.label === 'string' && entry.label.length > 0)
+  check('会话对象带 conversation 数组', Array.isArray(entry?.conversation))
+  const item = entry?.conversation?.[0]
+  check('conversation 项形如 {role, text}', typeof item?.role === 'string' && typeof item?.text === 'string', JSON.stringify(item).slice(0, 120))
+  check('conversation 的 text 是完整原文（不是碎片）', typeof item?.text === 'string' && item.text.length > 0)
+  check('JSON 里没有裸 "<"（原生 stringifyTagSafeJson 转义）', !ctxText.includes('"content":"<'))
+}
 
 // 折叠渲染：source 必须是 DSH 的 recall 形态
 const src = ctxMessage?.source || {}

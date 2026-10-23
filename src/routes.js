@@ -86,25 +86,37 @@ export function registerRoutes(ctx, cfg) {
     const decision = await next()
     if (decision.kind === 'reject') return decision
 
-    const parsed = decision.messages.map((message) => parseMentions(message))
-    const all = parsed.flatMap((p) => p.references)
-    if (all.length === 0) return decision
-
-    const contexts = []
-    for (const reference of all) {
-      const context = await buildContext(cfg, reference, signal)
-      if (context) contexts.push(context)
+    // 逐条消息处理：**上下文紧跟在引用它的那条消息之后**（原生 prepareDirectMessages
+    // 就是这么排的：每条带提及的消息 → [规范化后的直消息, 该消息的上下文]）。
+    // 全部堆到末尾会让"提到 A 的问题"和"A 的材料"在多条消息时错位。
+    const out = []
+    let contextCount = 0
+    for (const message of decision.messages) {
+      const parsed = parseMentions(message)
+      if (parsed.references.length === 0) {
+        out.push(message)
+        continue
+      }
+      out.push(parsed.message)
+      for (const reference of parsed.references) {
+        const context = await buildContext(cfg, reference, signal)
+        if (!context) continue
+        out.push(context)
+        contextCount++
+      }
     }
-    if (contexts.length === 0) return decision
+    if (contextCount === 0) return decision
 
     ctx.logger?.info?.(
-      `dsh-hermes-session: 已把 ${contexts.length} 个 Hermes 会话附加到 ${agent.id} 的本轮消息`,
+      `dsh-hermes-session: 已把 ${contextCount} 个 Hermes 会话附加到 ${agent.id} 的本轮消息`,
     )
 
-    // 用户消息在前（提及已规范化为 @标签），会话上下文在后。
+    // 用户消息在前（提及已规范化为 @标签），会话上下文紧随其后。
+    // 注意要把 parseMentions 规范化过的消息写回——原生也是把
+    // `@[标签](dsh-session:...)` 换成 `@标签`（保留可见引用，去掉 URI）。
     return {
       ...decision,
-      messages: [...decision.messages, ...contexts],
+      messages: out,
     }
   }
 
