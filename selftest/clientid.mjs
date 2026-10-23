@@ -107,14 +107,24 @@ check(
   '草稿写入需要 slot 的 inputActions 面，popupSelect 拿不到',
 )
 check(
-  '客户端用 insertReference 插入引用 chip',
-  clientCode.includes('insertReference(') && clientCode.includes('appearance:'),
-  "appearance:'session' 才是原生 @ 引用的蓝色 chip 样式；insertReference 走显式 span，与原生同路径",
+  '客户端通过作用域事件插入 chip（不调不存在的 insertReference）',
+  clientCode.includes("slash/input-insert-reference") && clientCode.includes('appearance:'),
+  '公开 inputActions 没有 insertReference；chip 只能走 actx.bail 事件（原生 @ 同路径）',
+)
+check(
+  '客户端用 sessions.using 取会话作用域 ctx',
+  clientCode.includes('sessions.using(') && clientCode.includes('binding.ctx'),
+  'actx = reference.binding.ctx，官方 +技能 按钮同一手法',
 )
 check(
   '客户端用 captureInsertion 取 span',
   clientCode.includes('captureInsertion()'),
-  'span 必须在插入时刻取（带 draftRev），否则被编辑器的 span-CAS 静默拒绝',
+  'span 必须在插入时刻取（带 draftRev），否则被 span-CAS 静默拒绝',
+)
+check(
+  '客户端有纯文本兜底（不硬失败）',
+  clientCode.includes('insertText(` ${mentionText(session)} `, span)'),
+  '事件路径不可用时降级为纯文本，而不是报"无法插入草稿"',
 )
 check(
   '客户端插入的是可编辑的提及',

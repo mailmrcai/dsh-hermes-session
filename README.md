@@ -89,9 +89,17 @@ Picking a session writes a **Markdown mention into your draft** — exactly like
           → appended after your message → the model sees both in one turn
 ```
 
-The chip is inserted through the editor's reference API (`insertReference` with
-`appearance: 'session'`), so it renders exactly like the harness's own `@`-mentioned
-session references — blue, removable, and carrying the mention in its text. The picker
+The chip is inserted along the same path the native `@` reference uses: bail
+`slash/input-insert-reference` on the session scope, where conversation.input's
+listener hands it to `shell.insertReference`. It therefore renders exactly like the
+harness's own `@`-mentioned session references — blue, removable, and carrying the
+mention in its text.
+
+Note on the public API: the `inputActions` face a plugin receives exposes only
+`captureInsertion` / `insertText` / `setDraft` / `addAttachments` /
+`removeAttachment` / `pruneAttachments` / `submit` — there is **no chip-insertion
+method** (`insertReference` lives inside the SessionInputShell class). The session
+scope is reachable via `sessions.using(sessionId, ..., ref => ref.binding.ctx)`. The picker
 closes when you click elsewhere or press Escape, and the button is plain text, matching
 the official "+skills" button.
 

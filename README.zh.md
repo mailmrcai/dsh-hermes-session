@@ -100,8 +100,15 @@ Markdown 提及写进草稿**，用户写完描述一并发送。
   → 追加到该轮用户消息之后 → 模型这一轮两者一起看
 ```
 
-chip 走编辑器的引用 API 插入（`insertReference` + `appearance: 'session'`），所以样式和
-原生 `@` 会话引用完全一致——蓝色、可删除、文本里带着提及。
+chip 走**原生 `@` 引用同一条路径**插入：在会话作用域上 bail
+`slash/input-insert-reference` 事件，由 conversation.input 的监听器转交给
+`shell.insertReference`，所以样式和原生 `@` 会话引用完全一致——蓝色、可删除、
+文本里带着提及。
+
+注意：公开给插件的 `inputActions` 只有 `captureInsertion` / `insertText` /
+`setDraft` / `addAttachments` / `removeAttachment` / `pruneAttachments` / `submit`
+——**没有插 chip 的方法**（`insertReference` 只存在于 SessionInputShell 类内部）。
+拿会话作用域 ctx 的方式：`sessions.using(sessionId, ..., ref => ref.binding.ctx)`。
 
 弹窗点外部或按 Esc 关闭；按钮是纯文字，与官方「+技能」按钮一致。
 

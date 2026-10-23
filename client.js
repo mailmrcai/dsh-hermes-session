@@ -28,8 +28,8 @@
 window.__ModuleLoader__.load({
   id: 'dsh-hermes-session',
   factory(require) {
-    /** 必需服务：slot 注册表。 */
-    const inject = ['slots']
+    /** 必需服务：slot 注册表 + sessions（取会话作用域 ctx 用）。 */
+    const inject = ['slots', 'sessions']
 
     /** Host 路由（document-relative，与 dsh-session-log-export 的做法一致）。 */
     const LIST_ROUTE = 'api/hermes.sessions'
@@ -100,43 +100,86 @@ window.__ModuleLoader__.load({
       return `@[${label}](${encodeMention(session.sessionId)})`
     }
 
-    /**
-     * 把会话作为**引用 chip**插入草稿。
-     *
-     * 用 inputActions.addFiles 而不是 insertText：addFiles 插的是编辑器的
-     * reference chip，appearance:'session' 让它渲染成与原生 `@` 会话引用同样的
-     * 蓝色样式；insertText 只会插一段纯文本。
-     *
-     * 用 insertReference(ref, span) 而不是 addFiles([...], [])：
-     * addFiles 走的是「活选区」位置（draftEditor.insertFileReferences），而
-     * insertReference 带显式 span（captureInsertion() 取，带草稿版本号），
-     * 与原生 `@` 引用同一条路径。
-     *
-     * @param {object} inputActions session slot 的 inputActions
-     * @param {{sessionId: string, title: string}} session 选中的会话
-     * @returns {boolean} 是否插入成功
-     */
-    function insertChip(inputActions, session) {
-      if (!inputActions
-        || typeof inputActions.captureInsertion !== 'function'
-        || typeof inputActions.insertReference !== 'function') return false
+    // 关键事实（dsh 0.2.0-rc.1 实测源码）：公开给插件的 inputActions 只有
+    //   captureInsertion / insertText / setDraft
+    //   addAttachments / removeAttachment / pruneAttachments / submit
+    // **没有 insertReference，也没有插 chip 的公开方法**——`insertReference` 只存在
+    // 于 SessionInputShell 类内部（line 13762），插件拿不到。之前两版（addFiles /
+    // insertReference）都因此失败，报"无法插入草稿"。
+    //
+    // 正确路径 = 原生 `@` 引用同一条：在会话作用域上 bail 事件
+    //   slash/input-insert-reference
+    // 监听器由 conversation.input 注册（client.js:14264）→ 调 shell.insertReference。
+    // 拿 actx 照抄官方「+技能」按钮：sessions.using(sessionId, ...) →
+    // reference.binding.ctx。
+    //
+    // 兜底：拿不到 actx / 没人接事件 → 退化为 insertText 插纯文本。
+    // 宁可样式降级，也不能让用户看到"无法插入草稿"。
+
+    let sessionsScope = null
+
+    /** 构造原生同构的 ReferenceInsert。 */
+    function referenceFor(session) {
       const mention = mentionText(session)
+      return {
+        source: 'reference',
+        ref: mention,
+        label: session.title || session.sessionId || 'Hermes 会话',
+        appearance: 'session', // ← 渲染成蓝色会话 chip（与原生 @ 一致）
+        clipboardText: mention,
+      }
+    }
+
+    /**
+     * 插入引用 chip（事件路径，失败退化为纯文本）。
+     *
+     * sessions.using() 是异步的——回调在会话就绪后才跑，所以这里必须 await，
+     * 否则同步读 ok 永远是 false，会误判成"插入失败"而退化成纯文本。
+     *
+     * @param {object} inputActions slot 的 inputActions
+     * @param {string} sessionId 当前 DSH 会话 id
+     * @param {{sessionId: string, title: string}} session 选中的 Hermes 会话
+     * @returns {Promise<boolean>} 是否插入成功
+     */
+    async function insertChip(inputActions, sessionId, session) {
+      if (!inputActions || typeof inputActions.captureInsertion !== 'function') return false
+      let span = null
       try {
-        const span = inputActions.captureInsertion()
+        span = inputActions.captureInsertion()
         if (!span || typeof span.draftRev !== 'number') return false
-        return inputActions.insertReference(
-          {
-            source: 'reference',
-            ref: mention,
-            label: session.title || session.sessionId || 'Hermes 会话',
-            appearance: 'session',
-            clipboardText: mention,
-          },
-          span,
-        ) === true
       } catch {
         return false
       }
+
+      // 1) 首选：作用域事件 → 真正的 reference chip（蓝色）。
+      const sessions = sessionsScope && sessionsScope.sessions
+      if (sessions && typeof sessions.using === 'function') {
+        try {
+          let ok = false
+          await sessions.using(sessionId, { source: 'hermesComposer' }, (reference) => {
+            const actx = reference && reference.binding && reference.binding.ctx
+            if (actx && typeof actx.bail === 'function') {
+              ok = actx.bail(actx, 'slash/input-insert-reference', {
+                reference: referenceFor(session),
+                span,
+              }) === true
+            }
+          })
+          if (ok) return true
+        } catch {
+          /* 落到兜底 */
+        }
+      }
+
+      // 2) 兜底：纯文本插入（样式降级，功能不丢）。
+      try {
+        if (typeof inputActions.insertText === 'function') {
+          return inputActions.insertText(` ${mentionText(session)} `, span) === true
+        }
+      } catch {
+        /* 忽略 */
+      }
+      return false
     }
 
     /**
@@ -199,8 +242,8 @@ window.__ModuleLoader__.load({
         }
       }, [open])
 
-      const pick = (option) => {
-        const ok = insertChip(props.inputActions, { sessionId: option.id, title: option.label })
+      const pick = async (option) => {
+        const ok = await insertChip(props.inputActions, props.sessionId, { sessionId: option.id, title: option.label })
         if (ok) {
           setOpen(false)
           setQuery('')
@@ -338,6 +381,12 @@ window.__ModuleLoader__.load({
      * @param {object} ctx 客户端根 context
      */
     function apply(ctx) {
+      // 拿 sessions 服务：插入 chip 要靠它取会话作用域 ctx（actx），
+      // 再 bail `slash/input-insert-reference` 事件——原生 @ 引用同一条路径。
+      ctx.inject(['sessions'], (scope) => {
+        sessionsScope = scope
+      })
+
       ctx.inject(['slots'], (scope) => {
         const slots = scope.get('slots')
         scope.effect(() => slots.inject('conversation.input.left', () => slots.register({
