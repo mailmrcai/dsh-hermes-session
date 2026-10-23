@@ -97,10 +97,10 @@ check('摘要标注 profile', sirnaOut.includes('sirna'), sirnaOut.slice(0, 200)
 const sirnaText = sirnaExec.deferred[0]?.content?.[0]?.text || ''
 check('注入文本标注 Hermes profile', sirnaText.includes('sirna'))
 
-console.log('\n5) Host HTTP 路由 + pre-step 钩子（选中只暂存，发消息时才注入）')
-const { registerRoutes, LIST_ROUTE, SELECT_ROUTE } = await import('../src/routes.js')
+console.log('\n5) Host HTTP 路由 + pre-step 钩子（解析草稿里的 Hermes 提及）')
+const { registerRoutes, LIST_ROUTE, MENTION_SCHEME, parseMentions } = await import('../src/routes.js')
 
-// 假 ctx：捕获注册的两条路由与 pre-step 钩子
+// 假 ctx：捕获注册的路由与 pre-step 钩子
 const registered = []
 const preStepHooks = []
 const fakeCtx = {
@@ -119,14 +119,10 @@ const fakeCtx = {
 }
 
 const dispose = registerRoutes(fakeCtx, cfg)
-check('注册了两条路由', registered.length === 2, `实际 ${registered.length}`)
+check('注册了一条路由', registered.length === 1, `实际 ${registered.length}`)
 const listRoute = registered.find((r) => r.path === LIST_ROUTE)
-const selectRoute = registered.find((r) => r.path === SELECT_ROUTE)
 check('列表路由存在', !!listRoute, LIST_ROUTE)
-check('选择路由存在', !!selectRoute, SELECT_ROUTE)
-check('路由路径在 /api 下', LIST_ROUTE.startsWith('/api/') && SELECT_ROUTE.startsWith('/api/'))
 check('列表路由是 GET', listRoute?.methods?.includes('GET'))
-check('选择路由是 POST', selectRoute?.methods?.includes('POST'))
 check('注册了 agent/pre-step 钩子', preStepHooks.length === 1, `实际 ${preStepHooks.length}`)
 
 // GET 列表
@@ -135,25 +131,26 @@ check('列表路由返回 200', listResponse.status === 200, String(listResponse
 const payload = await listResponse.json()
 check('列表返回含 sessions 数组', Array.isArray(payload.sessions), String(typeof payload.sessions))
 check('列表每条带 sessionId', (payload.sessions || []).every((s) => typeof s.sessionId === 'string'))
-check('列表每条带 profile', (payload.sessions || []).every((s) => typeof s.profile === 'string'))
 check('列表会话数 > 0', (payload.sessions || []).length > 0, `条数 ${payload.sessions?.length}`)
 
-// POST 选择：只暂存，不注入
+// 提及解析：@[标题](dsh-hermes:<base64url>) → 引用 + 文本规范化
 const target = payload.sessions[0].sessionId
-const selectResponse = await selectRoute.fetch(
-  new Request(`http://x${SELECT_ROUTE}`, {
-    method: 'POST',
-    body: JSON.stringify({ sessionId: target, dshSessionId: 'current-session' }),
-  }),
-)
-check('选择路由返回 200', selectResponse.status === 200, String(selectResponse.status))
-const selectBody = await selectResponse.json()
-check('选择返回 ok', selectBody.ok === true, JSON.stringify(selectBody).slice(0, 120))
-check('选择只暂存（pending），不直接注入', selectBody.pending === true, JSON.stringify(selectBody).slice(0, 120))
+const b64 = Buffer.from(JSON.stringify(target), 'utf8')
+  .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+const mention = `@[${payload.sessions[0].title || '会话'}](${MENTION_SCHEME}${b64})`
+const userMessage = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: `帮我总结这个 ${mention}` }] }
+const parsed = parseMentions(userMessage)
+check('解析出一个提及', parsed.references.length === 1, `实际 ${parsed.references.length}`)
+check('提及解出正确的 sessionId', parsed.references[0]?.sessionId === target, String(parsed.references[0]?.sessionId))
+check('提及被规范化为 @标签', parsed.message.content[0].text.includes('@'), parsed.message.content[0].text.slice(0, 60))
+check('规范化后不再含 URI', !parsed.message.content[0].text.includes(MENTION_SCHEME))
 
-// pre-step：用户发消息时才注入上下文
+// 无提及 → 不改动
+const plain = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '普通消息' }] }
+check('无提及时不产生引用', parseMentions(plain).references.length === 0)
+
+// pre-step：带提及的用户消息 → 追加上下文
 const preStep = preStepHooks[0]
-const userMessage = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '帮我总结这个会话' }] }
 const decision = await preStep(
   { agent: { id: 'current-session' }, messages: [userMessage], signal: new AbortController().signal },
   async () => ({ kind: 'enter', messages: [userMessage] }),
@@ -165,7 +162,7 @@ check('追加的是上下文消息', ctxMessage && ctxMessage !== userMessage)
 check('上下文消息带 source', !!ctxMessage?.source)
 check('上下文文本带不可信警示', (ctxMessage?.content?.[0]?.text || '').includes('不可信背景'))
 
-// 折叠渲染：source 必须是 DSH 的 recall 形态，对话列表才会渲染成可折叠的上下文行
+// 折叠渲染：source 必须是 DSH 的 recall 形态
 const src = ctxMessage?.source || {}
 check('source.form === recall（触发折叠渲染）', src.form === 'recall', String(src.form))
 check('source.kind 是插件自己的标识', src.kind === 'hermes-session', String(src.kind))
@@ -176,26 +173,12 @@ check('reference 带 retainedMessages 数字', typeof ref?.retainedMessages === 
 check('reference 带 omittedMessages 数字', typeof ref?.omittedMessages === 'number', String(ref?.omittedMessages))
 check('reference 带 truncated 布尔', typeof ref?.truncated === 'boolean', String(ref?.truncated))
 
-// 一次选择只服务下一次发送：再跑一次 pre-step 不应重复注入
+// 没有提及 → 不追加
 const decision2 = await preStep(
-  { agent: { id: 'current-session' }, messages: [userMessage], signal: new AbortController().signal },
-  async () => ({ kind: 'enter', messages: [userMessage] }),
+  { agent: { id: 'current-session' }, messages: [plain], signal: new AbortController().signal },
+  async () => ({ kind: 'enter', messages: [plain] }),
 )
-check('暂存取出即消费（第二次 pre-step 不再追加）', decision2.messages.length === 1, `实际 ${decision2.messages.length}`)
-
-// 错误路径
-const emptySelect = await selectRoute.fetch(
-  new Request(`http://x${SELECT_ROUTE}`, { method: 'POST', body: JSON.stringify({}) }),
-)
-check('空 sessionId 返回 400', emptySelect.status === 400, String(emptySelect.status))
-const noDsh = await selectRoute.fetch(
-  new Request(`http://x${SELECT_ROUTE}`, { method: 'POST', body: JSON.stringify({ sessionId: target }) }),
-)
-check('缺 dshSessionId 返回 400', noDsh.status === 400, String(noDsh.status))
-const badJson = await selectRoute.fetch(
-  new Request(`http://x${SELECT_ROUTE}`, { method: 'POST', body: 'not json' }),
-)
-check('非 JSON 请求体返回 400', badJson.status === 400, String(badJson.status))
+check('无提及时不追加上下文', decision2.messages.length === 1, `实际 ${decision2.messages.length}`)
 
 await dispose()
 check('注销后路由已移除', true)

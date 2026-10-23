@@ -1,5 +1,5 @@
 /**
- * Host 端 HTTP 路由 + pre-step 钩子：客户端 /hermes 弹窗的数据通道。
+ * Host 端 HTTP 路由 + pre-step 钩子：Hermes 会话注入通道。
  *
  * ## 为什么走 HTTP 路由而不是斜杠命令
  * DSH 的斜杠命令（ctx.commands.register）**无法从菜单隐藏**——CommandDefinition
@@ -9,24 +9,21 @@
  * 客户端出现 `remote.hermes`。
  *
  * 于是剩下这条路：Host 用 ctx.connection.fetch.register() 注册一条 /api 下的
- * 精确路由，客户端直接 fetch。路由**不进斜杠菜单**，客户端的 /hermes contribution
- * 是菜单里唯一的条目（还能带图标）。
+ * 精确路由，客户端直接 fetch。路由**不进斜杠菜单**。
  *
  * 范例：dsh-session-log-export 的 /export 就是
  * "ctx.connection.fetch.register({path:'/api/session.export', ...})" + 客户端 fetch。
  * 鉴权由物理载体处理，路由本身不用管。
  *
- * ## 为什么注入要挂在 pre-step，而不是选中即注入
- * 选中会话时**不能**直接注入：用户还没说要做什么，直接注入会唤醒 agent 让模型
- * 自己开跑（用户明确反馈过这个问题）。
+ * ## 注入时机与形态：对齐原生 @ 提及会话
+ * 用户在输入框选一个 Hermes 会话（客户端把 `@[标题](dsh-hermes:<base64url>)`
+ * 写进草稿）→ 写描述 → 发送 → **agent/pre-step 钩子**解析用户消息里的提及 →
+ * 读 Hermes 会话 → 渲染成 form:'recall' 的上下文消息 → 追加到用户消息**之后**。
  *
- * DSH 原生的 `@` 提及会话走的就是这个模式：用户写完消息发送 → agent/pre-step
- * 钩子解析提及 → 读会话 → 在用户消息**后面**追加上下文消息 → 模型这一轮同时看到
- * 用户的描述和会话内容。
+ * 模型这一轮同时看到用户的描述和会话内容；对话列表里上下文渲染成一行可折叠的行。
  *
- * 这里照搬：客户端选会话时只**暂存**（POST /api/hermes.import 只写暂存区），
- * 用户随后在输入框写描述并发送 → pre-step 钩子取出暂存 → 读 Hermes 会话 →
- * 渲染成 form:'recall' 的上下文消息 → 追加到用户消息之后。
+ * 关键是**不要在用户选中时就注入**：那会唤醒 agent 让模型自己开跑（用户反馈过
+ * 这个问题）。挂 pre-step 是原生 `@` 提及会话的做法，语义一致。
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { runHermesRead, HermesReadError } from './bridge.js'
@@ -34,8 +31,9 @@ import { renderProjection } from './render.js'
 
 /** 会话列表路由（GET）。 */
 export const LIST_ROUTE = '/api/hermes.sessions'
-/** 暂存选中的会话（POST，body 是 { sessionId, dshSessionId }）。 */
-export const SELECT_ROUTE = '/api/hermes.select'
+
+/** 提及 scheme：与官方 dsh-session: 平行。 */
+export const MENTION_SCHEME = 'dsh-hermes:'
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' }
 
@@ -52,13 +50,9 @@ function json(body, status = 200) {
 export function registerRoutes(ctx, cfg) {
   const fetch = ctx.connection?.fetch
   if (!fetch) {
-    ctx.logger?.warn?.('dsh-hermes-session: connection.fetch 不可用，/hermes 弹窗无法使用')
+    ctx.logger?.warn?.('dsh-hermes-session: connection.fetch 不可用，会话选择器无法使用')
     return () => Promise.resolve()
   }
-
-  // 每个 DSH 会话一份暂存：agentId → 选中的 Hermes 会话 id。
-  // 选中只是记账，注入要等用户下一次发消息。
-  const pending = new Map()
 
   const disposers = [
     fetch.register({
@@ -85,80 +79,32 @@ export function registerRoutes(ctx, cfg) {
         }
       },
     }),
-    fetch.register({
-      path: SELECT_ROUTE,
-      methods: ['POST'],
-      requestBody: 'buffered',
-      fetch: async (request) => {
-        let payload = {}
-        try {
-          payload = await request.json()
-        } catch (error) {
-          ctx.logger?.warn?.(
-            `dsh-hermes-session: 选择路由收到非 JSON 请求体：${String(error)}`,
-          )
-          return json({ error: '请求体不是合法 JSON' }, 400)
-        }
-        const hermesSessionId = String(payload?.sessionId || '').trim()
-        const dshSessionId = String(payload?.dshSessionId || '').trim()
-        if (!hermesSessionId) {
-          return json({ error: 'sessionId 不能为空' }, 400)
-        }
-        if (!dshSessionId) {
-          return json({ error: '缺少 dshSessionId（无法定位要附加到哪个会话）' }, 400)
-        }
-
-        // 只暂存，不注入——注入发生在用户下一次发消息时（pre-step 钩子）。
-        pending.set(dshSessionId, { hermesSessionId, at: Date.now() })
-        ctx.logger?.info?.(
-          `dsh-hermes-session: 已暂存 ${hermesSessionId}，等待用户在 ${dshSessionId} 中发送消息`,
-        )
-        return json({ ok: true, pending: true, hermesSessionId })
-      },
-    }),
   ]
 
-  // pre-step：用户发消息时，把暂存的 Hermes 会话作为上下文追加到该轮。
+  // pre-step：用户消息里的 Hermes 提及 → 追加会话上下文。
   const onPreStep = async ({ agent, messages, signal }, next) => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
 
-    const selected = pending.get(agent.id)
-    if (!selected) return decision
+    const parsed = decision.messages.map((message) => parseMentions(message))
+    const all = parsed.flatMap((p) => p.references)
+    if (all.length === 0) return decision
 
-    // 取出即消费：一次选择只服务于下一次发送。
-    pending.delete(agent.id)
-
-    let projection
-    try {
-      projection = await runHermesRead(
-        ['show', selected.hermesSessionId, '--max-msgs', String(cfg.maxMessages), '--max-chars', String(cfg.maxChars)],
-        { dbPath: cfg.dbPath, pythonPath: cfg.pythonPath, signal },
-      )
-    } catch (error) {
-      ctx.logger?.warn?.(
-        `dsh-hermes-session: 读取暂存会话 ${selected.hermesSessionId} 失败：${failureText(error)}`,
-      )
-      return decision
+    const contexts = []
+    for (const reference of all) {
+      const context = await buildContext(cfg, reference, signal)
+      if (context) contexts.push(context)
     }
-
-    const rendered = renderProjection(projection, { maxChars: cfg.maxChars })
-    if (!rendered.text) return decision
-
-    // form:'recall' → 客户端渲染成一行可折叠的上下文，而不是铺开全文。
-    const context = createUserMessage({
-      content: [{ type: 'text', text: rendered.text }],
-      source: rendered.source,
-    })
+    if (contexts.length === 0) return decision
 
     ctx.logger?.info?.(
-      `dsh-hermes-session: 已把 ${projection.session?.sessionId || selected.hermesSessionId}`
-      + ` 附加到 ${agent.id} 的本轮消息（${rendered.stats.includedMessages} 条）`,
+      `dsh-hermes-session: 已把 ${contexts.length} 个 Hermes 会话附加到 ${agent.id} 的本轮消息`,
     )
 
+    // 用户消息在前（提及已规范化为 @标签），会话上下文在后。
     return {
       ...decision,
-      messages: [...decision.messages, context],
+      messages: [...decision.messages, ...contexts],
     }
   }
 
@@ -172,8 +118,98 @@ export function registerRoutes(ctx, cfg) {
         /* 卸载期的错误不阻断其它清理 */
       }
     }
-    pending.clear()
   }
+}
+
+/**
+ * 解析一条消息里的 Hermes 提及。
+ *
+ * 与原生 dsh-session: 提及同构：`@[标签](dsh-hermes:<base64url>)` 或裸 URI。
+ * 提及被替换成 `@标签`——保留可见引用，去掉 URI。
+ *
+ * @param {object} message user 消息
+ * @returns {{message: object, references: Array<{sessionId: string, label: string}>}}
+ */
+export function parseMentions(message) {
+  const references = []
+  if (!message || !Array.isArray(message.content)) return { message, references }
+  if (message.source?.kind !== 'user') return { message, references }
+
+  // 两个捕获组：1=标签，2=URI。markdown 分支的 URI 必须自己加括号捕获，
+  // 否则它只是"非捕获"的一部分，而裸 URI 分支不参与匹配时该组是 undefined。
+  const pattern = new RegExp(
+    `@\\[((?:\\\\.|[^\\\\\\]])*)\\]\\((${MENTION_SCHEME}[^\\s)]*)\\)|(${MENTION_SCHEME}[A-Za-z0-9_-]+)`,
+    'gu',
+  )
+
+  const content = message.content.map((block) => {
+    if (block.type !== 'text') return block
+    // replace 的回调尾部还有 offset 与整个匹配串，不是捕获组——别把第三个
+    // 参数当 URI。
+    const text = block.text.replace(pattern, (_match, rawLabel, markdownUri, bareUri) => {
+      const uri = markdownUri ?? bareUri
+      if (typeof uri !== 'string') return _match
+      const sessionId = decodeMentionUri(uri)
+      if (sessionId === undefined) return _match
+      const label = rawLabel === undefined ? sessionId : unescapeLabel(rawLabel)
+      references.push({ sessionId, label })
+      return `@${label}`
+    })
+    return { ...block, text }
+  })
+
+  return { message: { ...message, content }, references }
+}
+
+/** 解码提及 URI → 会话 id；不合法返回 undefined。 */
+function decodeMentionUri(uri) {
+  if (!uri.startsWith(MENTION_SCHEME)) return undefined
+  const payload = uri.slice(MENTION_SCHEME.length)
+  if (!/^[A-Za-z0-9_-]+$/.test(payload)) return undefined
+  try {
+    const json = decodeURIComponent(escape(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))))
+    const value = JSON.parse(json)
+    return typeof value === 'string' && value ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function unescapeLabel(label) {
+  return label.replace(/\\(.)/gu, '$1')
+}
+
+/**
+ * 读一个 Hermes 会话并渲染成上下文消息。
+ * @param {object} cfg 插件配置
+ * @param {{sessionId: string, label: string}} reference 提及
+ * @param {AbortSignal} signal 取消信号
+ * @returns {Promise<object|null>} 上下文消息；读取失败返回 null
+ */
+async function buildContext(cfg, reference, signal) {
+  let projection
+  try {
+    projection = await runHermesRead(
+      [
+        'show', reference.sessionId,
+        '--max-msgs', String(cfg.maxMessages),
+        '--max-chars', String(cfg.maxChars),
+      ],
+      { dbPath: cfg.dbPath, pythonPath: cfg.pythonPath, signal },
+    )
+  } catch (error) {
+    // 读不到就跳过：不能因为一个坏会话让整条用户消息发不出去。
+    return null
+  }
+
+  const rendered = renderProjection(projection, { maxChars: cfg.maxChars })
+  if (!rendered.text) return null
+
+  // form:'recall' → 客户端渲染成一行可折叠的上下文，而不是铺开全文。
+  return createUserMessage({
+    content: [{ type: 'text', text: rendered.text }],
+    source: rendered.source,
+  })
 }
 
 /** 把 HermesReadError / 通用 Error 变成人类可读的失败文案。 */

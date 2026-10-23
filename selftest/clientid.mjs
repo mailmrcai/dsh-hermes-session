@@ -88,19 +88,33 @@ check(
 )
 
 console.log('\n4) Host 侧只注册 HTTP 路由，不注册斜杠命令')
-const { LIST_ROUTE, SELECT_ROUTE } = await import(join(ROOT, 'src/routes.js'))
+const { LIST_ROUTE, MENTION_SCHEME } = await import(join(ROOT, 'src/routes.js'))
 check('列表路由 === /api/hermes.sessions', LIST_ROUTE === '/api/hermes.sessions', LIST_ROUTE)
-check('选择路由 === /api/hermes.select', SELECT_ROUTE === '/api/hermes.select', SELECT_ROUTE)
+check('提及 scheme === dsh-hermes:', MENTION_SCHEME === 'dsh-hermes:', MENTION_SCHEME)
 check(
   '客户端用的路由与 Host 一致',
-  clientCode.includes(LIST_ROUTE.replace('/api/', 'api/')) &&
-    clientCode.includes(SELECT_ROUTE.replace('/api/', 'api/')),
+  clientCode.includes(LIST_ROUTE.replace('/api/', 'api/')),
   '客户端应调 document-relative 的同名路由',
 )
 check(
-  '客户端选中时只暂存（不直接导入）',
-  clientCode.includes('dshSessionId') && !clientCode.includes('hermes.import'),
-  '选中即注入会在用户还没描述目的时就唤醒 agent',
+  '客户端与 Host 用同一个提及 scheme',
+  clientCode.includes(`'${MENTION_SCHEME}'`),
+  `两端必须都是 ${MENTION_SCHEME}`,
+)
+check(
+  '客户端在输入框工具行注册按钮',
+  clientCode.includes('conversation.input.left') && clientCode.includes('slots.register('),
+  '草稿写入需要 slot 的 inputActions 面，popupSelect 拿不到',
+)
+check(
+  '客户端用 inputActions 写草稿',
+  clientCode.includes('captureInsertion') && clientCode.includes('insertText'),
+  'span 必须在插入时刻 captureInsertion() 取，从 prop 读会被 span-CAS 静默拒绝',
+)
+check(
+  '客户端插入的是可编辑的提及',
+  clientCode.includes('@['),
+  '提及随用户消息一起发送，Host 侧 pre-step 解析后挂上下文',
 )
 check(
   '插件不注册任何 Host 斜杠命令',

@@ -10,7 +10,8 @@ offers three ways in:
 
 | Entry point | Shape | What it does |
 |---|---|---|
-| `/hermes` | Slash command (interactive) | Opens a searchable list of sessions across every profile; pick one and it is **staged** for the current conversation |
+| `＋ Hermes` | Composer button | Opens a searchable list of sessions across every profile; picking one writes a mention into your draft |
+| `/hermes` | Slash command | Same list, for the slash menu (the command shows the list; use the button to write into the draft) |
 | `hermes_sessions_list` | Model tool | Lists sessions (title / working directory / message count / last activity) across all profiles, sorted by recency |
 | `hermes_session_import` | Model tool | Imports one session by id (a unique prefix is enough) |
 
@@ -62,7 +63,7 @@ Hermes Agent                     this plugin                     DSH
                                                              │
 src/routes.js  ◀──HTTP── client.js ─────┘                    ▼
   GET  /api/hermes.sessions                            current conversation
-  POST /api/hermes.select                                   (one collapsed row)
+                                          (one collapsed row)
 ```
 
 - **Read-only by construction.** The helper opens SQLite with `mode=ro`; it never writes to Hermes's
@@ -74,25 +75,29 @@ src/routes.js  ◀──HTTP── client.js ─────┘                 
 - **Bounded.** Message bodies are clipped, older messages are dropped first, and the truncation is
   reported in the injected header rather than hidden.
 
-## When the context is attached
+## How the pick reaches the model
 
-Picking a session does **not** inject anything. The pick is only staged; the snapshot is attached when
-you next send a message, so you can choose the session first and describe what you want afterwards.
-
-This mirrors how the harness's own `@`-mentioned session references work: the mention is resolved in the
-`agent/pre-step` hook, and the prepared snapshot is appended **after** the user's message, so the model
-sees your request and the referenced material in the same turn.
+Picking a session writes a **Markdown mention into your draft** — exactly like the harness's own
+`@`-mentioned session references:
 
 ```
-/hermes  → pick a session
-          → POST /api/hermes.select       ← stages it only (agentId → sessionId)
+＋ Hermes → pick a session
+          → the draft gets  @[Session title](dsh-hermes:<base64url>)
           → you type your request and send
-          → agent/pre-step takes the staged pick
+          → agent/pre-step resolves the mention
           → reads the Hermes session, renders it as a form:'recall' context message
           → appended after your message → the model sees both in one turn
 ```
 
-Staging is consumed on read: one pick serves exactly the next message you send.
+Two consequences worth knowing:
+
+- **Nothing is attached until you send.** Picking a session never wakes the agent — you choose the
+  material first, describe what you want afterwards, and both travel in one message.
+- **The mention stays editable.** It is ordinary draft text: you can reword it, delete it, or add a
+  second session, and the model only sees the sessions you actually sent.
+
+The mention is parsed by the `agent/pre-step` hook, which reads the session, renders it as a collapsed
+context row (`form: 'recall'`), and appends it after your message.
 
 ## The injected context
 
@@ -109,8 +114,8 @@ node selftest/run.mjs && node selftest/clientid.mjs
 
 The self-tests run against a real Hermes store (read-only) and assert the plugin's invariants: the
 client module id matches the package name, the HTTP routes are registered with the right methods, the
-staging is consumed on read, and the attached message carries the `form: 'recall'` source shape the
-chat renderer expects.
+the mention is parsed and the attached message carries the `form: 'recall'` source shape the chat
+renderer expects.
 
 ## Privacy
 

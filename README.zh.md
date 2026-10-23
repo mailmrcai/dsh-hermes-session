@@ -7,7 +7,8 @@
 
 | 入口 | 形态 | 作用 |
 |---|---|---|
-| `/hermes` | 斜杠命令（交互式，带图标） | 弹窗列出全部 profile 的会话，点击即导入。复刻 `/model` 的 popupSelect 模式 |
+| `＋ Hermes` | 输入框工具行按钮 | 弹窗列出全部 profile 的会话，选中后把提及写进草稿 |
+| `/hermes` | 斜杠命令（带图标） | 同样的会话列表，供斜杠菜单使用 |
 | `hermes_sessions_list` | 模型工具 | 列会话（标题 / 目录 / 消息数 / 最后活动），默认扫全部 profile 合并排序 |
 | `hermes_session_import` | 模型工具 | 按 sessionId 导入（支持唯一前缀），注入文本带警示头和截断事实 |
 
@@ -22,7 +23,7 @@ HTTP 路由（见下面「数据通道为什么是 HTTP 路由」）。
 src/index.js     插件入口：注册工具 + HTTP 路由 + systemPrompt 路由段
 src/tools.js     两个工具的 schema/execute（exec.deferContext 注入）
 src/routes.js    Host 端 HTTP 路由：GET /api/hermes.sessions（列表）、
-                 POST /api/hermes.select（暂存选中的会话）
+                 GET /api/hermes.sessions（列会话）
 client.js        客户端半部：注册 CommandContribution（popupSelect + icon），
                  options/onSelect 用 fetch 调上面两条路由
 src/bridge.js    子进程调用 hermes_read.py（--db/--profile 前置，避免 argparse 报错）
@@ -41,10 +42,10 @@ selftest/clientid.mjs   客户端模块不变量（id === 包名、走路由、�
       └─ fetch('api/hermes.sessions')
       ← Host 路由返回 JSON → 解析成 SelectOption[]
   → 用户点击某条
-  → popupSelect.onSelect()
-      └─ fetch('api/hermes.select', {method:'POST', body:{sessionId, dshSessionId}})
-      ← Host 路由只暂存（不注入）
-  → 面板关闭，下一 step 模型看到注入的上下文
+  → 草稿里写入 @[标题](dsh-hermes:<base64url>)   ← inputActions.insertText()
+  → 用户写描述并发送
+  → agent/pre-step 解析提及 → 读会话 → 追加 form:'recall' 上下文
+  → 对话里出现一行可折叠的上下文
 ```
 
 ### 菜单里的命令与图标
@@ -83,25 +84,31 @@ authentication policy"），路由本身不用管。
 
 代价：多开两个 HTTP 端点（只读列表 + 只读导入），都在 `/api/hermes.*` 下。
 
-### 注入时机：选中即暂存，发消息时才注入
+### 注入时机与形态：写进草稿，随消息一起发送
 
 用户选完 Hermes 会话时**不能**直接注入——他还没说要做什么，直接注入会唤醒
 agent 让模型自己开跑（这正是被反馈过的问题）。
 
-对齐 DSH 原生 `@` 提及会话的做法：用户写完消息发送 → `agent/pre-step` 钩子
-解析提及 → 读会话 → 在用户消息**后面**追加上下文消息 → 模型这一轮同时看到
-用户的描述和会话内容。
+对齐 DSH 原生 `@` 提及会话的做法，也对齐官方「+技能」按钮的实现：**把一条
+Markdown 提及写进草稿**，用户写完描述一并发送。
 
 ```
-/hermes 选中会话
-  → POST /api/hermes.select        ← 只暂存（agentId → sessionId），不注入
+＋ Hermes 选中会话
+  → 草稿里出现  @[会话标题](dsh-hermes:<base64url>)
   → 用户在输入框写描述并发送
-  → agent/pre-step 钩子取出暂存
+  → agent/pre-step 钩子解析这个提及
   → 读 Hermes 会话 → 渲染成 form:'recall' 的上下文消息
   → 追加到该轮用户消息之后 → 模型这一轮两者一起看
 ```
 
-暂存取出即消费：一次选择只服务下一次发送。
+两个直接后果：
+
+- **不发消息就不附加任何东西。** 选会话永远不会唤醒 agent。
+- **提及是普通草稿文本**，可改写、可删除、可再加一个会话——模型只看到你真正发出去的。
+
+草稿写入用的是 session slot 的标准 `inputActions` 面
+（`captureInsertion()` + `insertText()`）：span 必须在插入时刻取，从 React prop
+里读的永远滞后一版，会被编辑器的 span-CAS 静默拒绝——弹窗关掉但草稿没变。
 
 （工具 `hermes_session_import` 走的是另一条路——它在 turn 内执行，
 `exec.deferContext()` 的上下文挂在本次工具结果上，loop 在 `tool/result` 之后
@@ -233,7 +240,7 @@ dsh-hermes-session: pending (waiting for service: remote.hermes)
 client half 永远等不到这个服务，boot 审计判 pending → 整个 harness 起不来。
 
 **修复**：改走 HTTP 路由——Host 侧 `ctx.connection.fetch.register()` 注册
-`/api/hermes.sessions` 与 `/api/hermes.select`，客户端直接 `fetch`。
+`/api/hermes.sessions`，客户端直接 `fetch`。
 （中途试过 `ctx.remote.commands` 通道，但 Host 命令无法从菜单隐藏，见上面
 「数据通道为什么是 HTTP 路由」。）
 
@@ -246,9 +253,9 @@ client half 永远等不到这个服务，boot 审计判 pending → 整个 harn
 - 快照是 `get_messages_as_conversation` 语义的简化投影：不解 hermes 的私有 marker 列，遇到非文本 content 按原文处理
 - 压缩续写（compression lineage）不跟随：导入的是该会话自身记录的活跃行
 - 斜杠菜单里只有 `/hermes` 一条；数据通道是 `/api/hermes.sessions` 与
-  `/api/hermes.select` 两个 HTTP 端点（只读 Hermes 库，不写）
+  `/api/hermes.sessions`（只读 Hermes 库，不写）
 - 注入的上下文在对话里是**一行可折叠的上下文**（`form: 'recall'`），全文不铺开；
-  选中会话本身不触发任何对话——上下文随你下一条消息一起进入模型请求
+  选中会话只是往草稿写一行提及，本身不触发任何对话——上下文随你下一条消息一起进入模型请求
 - 插件硬依赖 `agents` 服务（注入要 `ctx.agents.get(sessionId)` 定位当前会话）；
   漏声明会让 `ctx.agents` 为 undefined，导入直接 400
 - 注入走 `agent.steer()`（唤醒 driver）；用 `inject()` 的话，会话空闲时消息
