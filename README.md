@@ -89,9 +89,11 @@ Picking a session writes a **Markdown mention into your draft** — exactly like
           → appended after your message → the model sees both in one turn
 ```
 
-The chip is inserted through the editor's reference API (`appearance: 'session'`), so it
-renders exactly like the harness's own `@`-mentioned session references — blue, removable,
-and carrying the mention in its text.
+The chip is inserted through the editor's reference API (`insertReference` with
+`appearance: 'session'`), so it renders exactly like the harness's own `@`-mentioned
+session references — blue, removable, and carrying the mention in its text. The picker
+closes when you click elsewhere or press Escape, and the button is plain text, matching
+the official "+skills" button.
 
 Two consequences worth knowing:
 

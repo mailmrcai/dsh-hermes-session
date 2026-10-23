@@ -77,9 +77,14 @@ check(
   'popupSelect 的 onSelect 拿不到 inputActions',
 )
 check(
-  '客户端从平台 seed 取图标',
-  clientCode.includes("require('@deepseek-ai/dsh-client-ui-primitives')"),
-  'ui-primitives 是 Web shell 的 staticModules seed，require 即得',
+  '客户端按钮是纯文字（与官方 +技能 一致，不塞图标）',
+  !clientCode.includes('dsh-client-ui-primitives') && clientCode.includes('＋ Hermes'),
+  '塞图标组件会撑出多余空白',
+)
+check(
+  '客户端弹窗用 portal 挂到 body',
+  clientCode.includes('createPortal'),
+  '官方 +技能 按钮同一做法：避免被输入框容器裁剪',
 )
 
 console.log('\n4) Host 侧只注册 HTTP 路由，不注册斜杠命令')
@@ -102,9 +107,14 @@ check(
   '草稿写入需要 slot 的 inputActions 面，popupSelect 拿不到',
 )
 check(
-  '客户端用 addFiles 插入引用 chip',
-  clientCode.includes('addFiles(') && clientCode.includes('appearance:'),
-  "appearance:'session' 才是原生 @ 引用的蓝色 chip 样式，insertText 只插纯文本",
+  '客户端用 insertReference 插入引用 chip',
+  clientCode.includes('insertReference(') && clientCode.includes('appearance:'),
+  "appearance:'session' 才是原生 @ 引用的蓝色 chip 样式；insertReference 走显式 span，与原生同路径",
+)
+check(
+  '客户端用 captureInsertion 取 span',
+  clientCode.includes('captureInsertion()'),
+  'span 必须在插入时刻取（带 draftRev），否则被编辑器的 span-CAS 静默拒绝',
 )
 check(
   '客户端插入的是可编辑的提及',

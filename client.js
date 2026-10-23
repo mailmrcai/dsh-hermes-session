@@ -31,11 +31,6 @@ window.__ModuleLoader__.load({
     /** 必需服务：slot 注册表。 */
     const inject = ['slots']
 
-    // 图标：ui-primitives 是 Web shell 的平台 seed（staticModules），任何 client
-    // 模块都能 require 到，无需在 dsh.client 里声明依赖。
-    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
-    const HERMES_ICON = primitives.IconArchiveOutlineRegular
-
     /** Host 路由（document-relative，与 dsh-session-log-export 的做法一致）。 */
     const LIST_ROUTE = 'api/hermes.sessions'
 
@@ -112,24 +107,32 @@ window.__ModuleLoader__.load({
      * reference chip，appearance:'session' 让它渲染成与原生 `@` 会话引用同样的
      * 蓝色样式；insertText 只会插一段纯文本。
      *
+     * 用 insertReference(ref, span) 而不是 addFiles([...], [])：
+     * addFiles 走的是「活选区」位置（draftEditor.insertFileReferences），而
+     * insertReference 带显式 span（captureInsertion() 取，带草稿版本号），
+     * 与原生 `@` 引用同一条路径。
+     *
      * @param {object} inputActions session slot 的 inputActions
      * @param {{sessionId: string, title: string}} session 选中的会话
      * @returns {boolean} 是否插入成功
      */
     function insertChip(inputActions, session) {
-      if (!inputActions || typeof inputActions.addFiles !== 'function') return false
+      if (!inputActions
+        || typeof inputActions.captureInsertion !== 'function'
+        || typeof inputActions.insertReference !== 'function') return false
       const mention = mentionText(session)
       try {
-        // 参考 chips 无附件 id：第二个参数传空数组。
-        return inputActions.addFiles(
-          [{
+        const span = inputActions.captureInsertion()
+        if (!span || typeof span.draftRev !== 'number') return false
+        return inputActions.insertReference(
+          {
             source: 'reference',
             ref: mention,
             label: session.title || session.sessionId || 'Hermes 会话',
             appearance: 'session',
             clipboardText: mention,
-          }],
-          [],
+          },
+          span,
         ) === true
       } catch {
         return false
@@ -149,7 +152,9 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState(null)
       const [query, setQuery] = React.useState('')
+      // cardRef：弹窗卡片（外部点击判定用）；btnRef：按钮（弹窗定位用）。
       const cardRef = React.useRef(null)
+      const btnRef = React.useRef(null)
 
       const load = React.useCallback(async () => {
         setLoading(true)
@@ -224,99 +229,108 @@ window.__ModuleLoader__.load({
         gap: '4px',
       }
 
-      if (!open) {
-        return h('button', {
-          type: 'button',
-          className: 'sk-chip',
-          title: '选择一个 Hermes 会话，其内容将注入本条消息',
-          'aria-haspopup': 'dialog',
-          'aria-expanded': 'false',
-          style: chipStyle,
-          onClick: () => setOpen(true),
-        }, h('span', {
-          'aria-hidden': 'true',
-          style: { display: 'inline-flex', width: '14px', height: '14px' },
-        }, HERMES_ICON), '＋ Hermes')
-      }
-
       const dim = 'var(--dsw-alias-label-tertiary, inherit)'
-      return h('div', { style: { position: 'relative', display: 'inline-block' } },
-        h('button', {
-          type: 'button',
-          className: 'sk-chip',
-          title: '关闭会话选择器',
-          'aria-haspopup': 'dialog',
-          'aria-expanded': 'true',
-          style: chipStyle,
-          onClick: () => setOpen(false),
-        }, '× 关闭'),
-        h('div', {
-          ref: cardRef,
-          role: 'dialog',
-          'aria-label': '选择 Hermes 会话',
-          style: {
-            position: 'absolute',
-            bottom: 'calc(100% + 6px)',
-            left: '0',
-            zIndex: '1100',
-            width: 'min(420px, 88vw)',
-            maxHeight: '320px',
-            overflow: 'auto',
-            background: 'var(--dsw-specific-bubble, #fff)',
-            color: 'var(--dsw-alias-label-primary, inherit)',
-            border: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12))',
-            borderRadius: 'var(--dsw-radius-md, 10px)',
-            boxShadow: '0 6px 24px rgba(0,0,0,0.18)',
-            padding: '8px',
-            textAlign: 'left',
-          },
+
+      // 弹窗用 portal 挂到 document.body——官方「+技能」按钮同一做法：
+      // 避免被输入框容器的 overflow 裁剪，也不用管父级的定位上下文。
+      const ReactDOM = require('react-dom')
+      const card = h('div', {
+        role: 'dialog',
+        'aria-label': '选择 Hermes 会话',
+        style: {
+          position: 'fixed',
+          zIndex: '1100',
+          width: 'min(420px, 88vw)',
+          maxHeight: '320px',
+          overflow: 'auto',
+          background: 'var(--dsw-specific-bubble, #fff)',
+          color: 'var(--dsw-alias-label-primary, inherit)',
+          border: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12))',
+          borderRadius: 'var(--dsw-radius-md, 10px)',
+          boxShadow: '0 6px 24px rgba(0,0,0,0.18)',
+          padding: '8px',
+          textAlign: 'left',
         },
-          h('input', {
-            type: 'text',
-            value: query,
-            placeholder: '按标题或 id 过滤',
-            'aria-label': '过滤 Hermes 会话',
-            onChange: (e) => setQuery(e.target.value),
-            style: {
-              width: '100%', boxSizing: 'border-box', marginBottom: '6px',
-              padding: '4px 8px', font: 'inherit',
-              background: 'var(--dsw-alias-markdown-code-block, rgba(0,0,0,0.04))',
-              color: 'inherit',
-              border: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12))',
-              borderRadius: 'var(--dsw-radius-sm, 8px)',
-            },
-          }),
-          error
-            ? h('div', {
-              role: 'alert',
-              style: { color: 'var(--dsw-alias-state-error-primary, #c00)', fontSize: '12px', padding: '4px 2px' },
-            }, error)
-            : null,
-          loading ? h('div', { style: { fontSize: '12px', padding: '4px 2px' } }, '加载中…') : null,
-          !loading && !error && filtered.length === 0
-            ? h('div', { style: { fontSize: '12px', padding: '4px 2px' } }, '没有匹配的会话')
-            : null,
-          filtered.map((o) => h('div', {
-            key: o.id,
-            role: 'option',
-            'aria-selected': 'false',
-            title: o.id,
-            onClick: () => pick(o),
-            style: {
-              padding: '6px 8px', borderRadius: 'var(--dsw-radius-sm, 8px)',
-              cursor: 'pointer', fontSize: '13px', lineHeight: '1.4',
-            },
-            onMouseEnter: (e) => { e.currentTarget.style.background = 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,0.05))' },
-            onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent' },
+      },
+        h('input', {
+          type: 'text',
+          value: query,
+          placeholder: '按标题或 id 过滤',
+          'aria-label': '过滤 Hermes 会话',
+          onChange: (e) => setQuery(e.target.value),
+          style: {
+            width: '100%', boxSizing: 'border-box', marginBottom: '6px',
+            padding: '4px 8px', font: 'inherit',
+            background: 'var(--dsw-alias-markdown-code-block, rgba(0,0,0,0.04))',
+            color: 'inherit',
+            border: '1px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12))',
+            borderRadius: 'var(--dsw-radius-sm, 8px)',
           },
-            h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
-              h('span', { style: { fontWeight: '500' } }, o.label),
-              o.badge ? h('span', { style: { fontSize: '11px', color: dim } }, `[${o.badge}]`) : null,
-            ),
-            o.detail ? h('div', { style: { fontSize: '11px', color: dim } }, o.detail) : null,
-          )),
-        ),
+        }),
+        error
+          ? h('div', {
+            role: 'alert',
+            style: { color: 'var(--dsw-alias-state-error-primary, #c00)', fontSize: '12px', padding: '4px 2px' },
+          }, error)
+          : null,
+        loading ? h('div', { style: { fontSize: '12px', padding: '4px 2px' } }, '加载中…') : null,
+        !loading && !error && filtered.length === 0
+          ? h('div', { style: { fontSize: '12px', padding: '4px 2px' } }, '没有匹配的会话')
+          : null,
+        filtered.map((o) => h('div', {
+          key: o.id,
+          role: 'option',
+          'aria-selected': 'false',
+          title: o.id,
+          onMouseDown: (e) => { e.preventDefault(); pick(o) },
+          style: {
+            padding: '6px 8px', borderRadius: 'var(--dsw-radius-sm, 8px)',
+            cursor: 'pointer', fontSize: '13px', lineHeight: '1.4',
+          },
+          onMouseEnter: (e) => { e.currentTarget.style.background = 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,0.05))' },
+          onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent' },
+        },
+          h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
+            h('span', { style: { fontWeight: '500' } }, o.label),
+            o.badge ? h('span', { style: { fontSize: '11px', color: dim } }, `[${o.badge}]`) : null,
+          ),
+          o.detail ? h('div', { style: { fontSize: '11px', color: dim } }, o.detail) : null,
+        )),
       )
+
+      const button = h('button', {
+        type: 'button',
+        className: 'sk-chip',
+        ref: btnRef,
+        title: '选择一个 Hermes 会话，其内容将注入本条消息',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': open,
+        style: chipStyle,
+        onClick: () => setOpen((v) => !v),
+      }, open ? '× 关闭' : '＋ Hermes')
+
+      if (!open) return button
+
+      // 弹窗贴着按钮定位：固定定位 + 按钮的 left，底部对齐按钮顶部。
+      // 高度不预设（内容多少弹多高），上边界由 maxHeight 兜底。
+      const rect = btnRef.current ? btnRef.current.getBoundingClientRect() : null
+      const left = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - 440)) : 8
+      const bottomGap = rect ? Math.max(8, window.innerHeight - rect.top + 6) : 8
+      const positioned = h('div', {
+        ref: cardRef,
+        style: {
+          ...card.props.style,
+          left: `${left}px`,
+          bottom: `${bottomGap}px`,
+          top: 'auto',
+        },
+      }, card.props.children)
+
+      const portal = ReactDOM.createPortal
+        ? ReactDOM.createPortal(positioned, document.body)
+        : positioned
+
+      return h(React.Fragment, null, button, portal)
     }
 
     /**
